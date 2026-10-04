@@ -47,9 +47,10 @@ jobs:
 
       - name: 编译后端
         if: steps.guard.outputs.skip != 'true'
+        working-directory: backend
         run: |
           mvn -q -B -DskipTests package
-          cp backend/target/resumable-upload-backend-*.jar backend/app.jar
+          cp target/resumable-upload-backend-*.jar app.jar
 
       - name: 构建前端
         if: steps.guard.outputs.skip != 'true'

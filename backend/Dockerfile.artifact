@@ -1,0 +1,10 @@
+# 薄运行时镜像：直接打包已构建好的 jar（deploy.sh / CI 产物模式使用）
+# 与多阶段 Dockerfile 的区别：不编译，只 COPY，可在小内存服务器上秒级组装
+FROM eclipse-temurin:17-jre
+WORKDIR /app
+COPY app.jar app.jar
+ENV UPLOAD_DIR=/data/upload \
+    JAVA_OPTS="-Xms64m -Xmx256m"
+VOLUME ["/data/upload"]
+EXPOSE 8080
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]

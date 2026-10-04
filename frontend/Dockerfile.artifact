@@ -1,0 +1,5 @@
+# 薄运行时镜像：直接打包已构建好的前端产物（deploy.sh / CI 产物模式使用）
+FROM nginx:1.27-alpine
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY dist/ /usr/share/nginx/html
+EXPOSE 80

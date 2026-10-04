@@ -9,7 +9,7 @@ env:
   REMOTE_DIR: /opt/resumable-upload
 
 jobs:
-  deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
     concurrency:
       group: deploy-prod
@@ -29,17 +29,42 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: 打包源码
+      - name: 构建 jar
+        if: steps.guard.outputs.skip != 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: 构建 dist
+        if: steps.guard.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 编译后端
         if: steps.guard.outputs.skip != 'true'
         run: |
-          tar --exclude='frontend/node_modules' \
-              --exclude='frontend/dist' \
-              --exclude='backend/target' \
-              --exclude='backend/data' \
-              --exclude='data' \
-              --exclude='tmp' \
-              --exclude='.git' \
-              -czf /tmp/app.tgz .
+          mvn -q -B -DskipTests package
+          cp backend/target/resumable-upload-backend-*.jar backend/app.jar
+
+      - name: 构建前端
+        if: steps.guard.outputs.skip != 'true'
+        working-directory: frontend
+        run: |
+          npm ci --no-fund --no-audit
+          npm run build
+
+      - name: 组装轻量镜像
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          docker build -t resumable-upload-backend -f backend/Dockerfile.artifact backend/
+          docker build -t resumable-upload-nginx  -f frontend/Dockerfile.artifact frontend/
+          docker save resumable-upload-backend resumable-upload-nginx | gzip > /tmp/images.tgz
+          du -h /tmp/images.tgz
 
       - name: 写入部署私钥
         if: steps.guard.outputs.skip != 'true'
@@ -50,7 +75,7 @@ jobs:
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
-      - name: 上传源码并部署
+      - name: 上传镜像并部署
         if: steps.guard.outputs.skip != 'true'
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -63,14 +88,16 @@ jobs:
                 "$SSH_USER@$SSH_HOST" "$@"
           }
           run_ssh "mkdir -p $REMOTE_DIR"
-          cat /tmp/app.tgz | run_ssh "tar -xzf - -C $REMOTE_DIR"
-          run_ssh "cd $REMOTE_DIR && docker compose up -d --build && docker image prune -f"
+          cat /tmp/images.tgz | run_ssh "cat > $REMOTE_DIR/images.tgz"
+          cat docker-compose.prod.yml | run_ssh "cat > $REMOTE_DIR/docker-compose.prod.yml"
+          run_ssh "gunzip -c $REMOTE_DIR/images.tgz | docker load && rm -f $REMOTE_DIR/images.tgz"
+          run_ssh "cd $REMOTE_DIR && docker compose -f docker-compose.prod.yml up -d"
           for i in $(seq 1 60); do
-            if run_ssh "curl -fsS http://localhost/api/files >/dev/null 2>&1"; then
-              echo "部署成功: http://$SSH_HOST"
+            if run_ssh "curl -fsS http://localhost:8080/api/files >/dev/null 2>&1"; then
+              echo "部署成功: http://$SSH_HOST:8080"
               exit 0
             fi
             sleep 2
           done
-          echo "健康检查超时，请上服务器查看: docker compose logs" >&2
+          echo "健康检查超时，请上服务器查看: docker compose -f $REMOTE_DIR/docker-compose.prod.yml logs" >&2
           exit 1

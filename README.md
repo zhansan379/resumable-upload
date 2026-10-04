@@ -17,7 +17,7 @@ Java (Spring Boot 3) + Vue 3 实现的大文件上传方案：**分片上传、�
 | 完整性校验 | 合并完成后**后台重算整体 MD5** 与前端 hash 比对（不阻塞响应），结果在文件列表展示 |
 | 文件管理 | 文件列表、下载、删除；取消上传自动清理服务端分片目录 |
 
-## 快速启动
+## 快速启动（本地开发）
 
 要求：JDK 17+、Maven 3.9+、Node 18+。
 
@@ -60,7 +60,7 @@ Vue 3 前端                                Spring Boot 后端
 5. 展示进度 / 速度 / 状态            ─┘
 ```
 
-存储布局（`backend/data/upload/`，可用 `app.upload.base-dir` 修改）：
+存储布局（`UPLOAD_DIR` 指向的目录，默认 `./data/upload`）：
 
 ```
 data/upload/
@@ -108,45 +108,51 @@ data/upload/
 | blueimp | 服务端权威进度（分片状态以磁盘为准） |
 | filepond | revert 端点（取消上传清理分片） |
 
-## 服务器部署（Docker Compose）
+## 服务器部署（Docker，产物模式）
 
-仓库内置了完整的容器化部署配置（`backend/Dockerfile`、`frontend/Dockerfile + nginx.conf`、`docker-compose.yml`）：
-
-- 前端构建产物由 **nginx** 托管并反向代理 `/api` 到后端容器，对外只暴露 80 端口；
-- 上传的分片与最终文件存在命名卷 `upload-data`（容器内 `/data/upload`，可用环境变量 `UPLOAD_DIR` 覆盖），重建容器不丢数据；
-- 国内网络已内置阿里云 Maven 镜像与 npmmirror 加速。
-
-在任意能 SSH 到服务器的机器上执行（服务器需已安装 Docker，脚本会完成：打包源码 → 上传 → `docker compose up -d --build` → 健康检查）：
+针对小内存云主机（如 2C2G 且同机还有其他业务）设计的部署方式：**本地/CI 构建产物，服务器只做 COPY 级镜像组装与运行**，全程不在服务器上编译。
 
 ```bash
+# 一键部署（本机需 JDK17/Maven/Node，服务器需 Docker）：
 ./scripts/deploy.sh root@<服务器IP>          # 默认 22 端口，部署到 /opt/resumable-upload
 ./scripts/deploy.sh root@<服务器IP> 2222     # 自定义 SSH 端口
 ```
 
-部署完成后验证后端接口（脚本同样适用于验证线上环境）：
+脚本动作：本地 `mvn package` + `npm run build` → 上传 jar/dist/部署文件 → 服务器 `docker build -f Dockerfile.artifact`（纯 COPY，秒级）→ `docker compose -f docker-compose.prod.yml up -d` → 健康检查。
+
+要点：
+
+- **对外端口 `8080`**（`docker-compose.prod.yml` 中映射 `8080:80`，避免与同机已有 nginx/80 端口业务冲突）；
+- 后端容器内存上限 512M（`-Xmx256m`），不挤占同机其他服务；
+- 上传数据持久化在命名卷 `upload-data`，重建容器不丢；
+- `Dockerfile.artifact` 为薄运行时镜像；`Dockerfile` 为多阶段自包含构建（本地/大内存环境可用：`docker compose up -d --build`）。
+
+验证部署（e2e 脚本同时适用于本地与线上）：
 
 ```bash
-BASE_URL=http://<服务器IP>/api node scripts/e2e-backend.mjs
+BASE_URL=http://<服务器IP>:8080/api node scripts/e2e-backend.mjs
 ```
 
-常用运维命令（服务器上）：
+运维命令（服务器上）：
 
 ```bash
 cd /opt/resumable-upload
-docker compose ps                 # 状态
-docker compose logs -f backend    # 后端日志
-docker compose up -d --build      # 代码更新后重建
-docker compose down               # 停止（数据卷保留）
+docker compose -f docker-compose.prod.yml ps          # 状态
+docker compose -f docker-compose.prod.yml logs -f backend
+docker compose -f docker-compose.prod.yml up -d       # 加载新镜像后重启
+docker compose -f docker-compose.prod.yml down        # 停止（数据卷保留）
 ```
+
+安全组要求：入方向放行 `22/TCP`（建议限制源地址）与 `8080/TCP`（0.0.0.0/0）。
 
 ## CI/CD（GitHub Actions）
 
-`.github/workflows/deploy.yml`：push 到 `main` 分支（或手动触发）自动执行——
+`.github/workflows/deploy.yml`：push 到 `main`（或手动触发）自动执行——
 
-1. 在 GitHub Runner 上打包源码（排除 node_modules/target 等构建产物）；
-2. 通过 SSH（私钥存于仓库 Secrets）上传到服务器 `/opt/resumable-upload`；
-3. 服务器上 `docker compose up -d --build` 重建容器；
-4. 循环探测 `/api/files` 健康检查，成功/失败都会反馈到 Actions 日志。
+1. Runner 上 `setup-java(17)` / `setup-node(22)` 编译后端 jar 与前端 dist；
+2. 用 `Dockerfile.artifact` 组装两个轻量镜像并 `docker save | gzip`；
+3. 经 SSH 上传到服务器，`docker load` 后 `docker compose up -d`（服务器零编译，2G 内存可平稳部署）；
+4. 循环探测 `/api/files` 健康检查，结果反馈到 Actions 日志。
 
 需要在仓库 **Settings → Secrets and variables → Actions** 配置 4 个 Secrets：
 
@@ -155,19 +161,17 @@ docker compose down               # 停止（数据卷保留）
 | `SSH_HOST` | 服务器公网 IP |
 | `SSH_USER` | SSH 用户名（如 root） |
 | `SSH_PORT` | SSH 端口（可选，默认 22） |
-| `SSH_PRIVATE_KEY` | 用于部署的 SSH **私钥**完整内容（`-----BEGIN OPENSSH PRIVATE KEY-----` 起） |
+| `SSH_PRIVATE_KEY` | 用于部署的 SSH **私钥**完整内容 |
 
 生成专用部署密钥（不要复用个人密钥）：
 
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/resumable-upload-deploy -N "" -C "resumable-upload-deploy"
-# 把公钥追加到服务器：
-ssh-copy-id -i ~/.ssh/resumable-upload-deploy.pub root@<服务器IP>   # 或手动追加到 ~/.ssh/authorized_keys
-# 私钥内容写入 Secret：
+ssh-copy-id -i ~/.ssh/resumable-upload-deploy.pub root@<服务器IP>
 gh secret set SSH_PRIVATE_KEY < ~/.ssh/resumable-upload-deploy
 ```
 
-安全组要求：入方向放行 `22/TCP`（建议限制源地址为你的出口 IP）与 `80/TCP`（0.0.0.0/0）。未配置 Secrets 时流水线会自动跳过部署，不会报错。
+未配置 Secrets 时流水线会自动跳过部署，不会报错。
 
 ## 生产化建议（超出 Demo 范围）
 

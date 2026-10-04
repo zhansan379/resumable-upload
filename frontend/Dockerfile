@@ -6,6 +6,7 @@ RUN npm config set registry https://registry.npmmirror.com
 COPY package.json package-lock.json ./
 RUN npm ci --no-fund --no-audit
 COPY . .
+ENV NODE_OPTIONS="--max-old-space-size=768"
 RUN npm run build
 
 # ---- 运行阶段：nginx 托管前端静态资源并反代 /api ----

@@ -1,5 +1,7 @@
 # ---- 构建阶段：Maven + JDK 17 ----
 FROM maven:3.9-eclipse-temurin-17 AS build
+# 小内存机器上构建的堆上限保护
+ENV MAVEN_OPTS="-Xmx512m"
 WORKDIR /app
 # 服务器在国内时用阿里云 Maven 镜像加速依赖下载
 RUN mkdir -p /root/.m2 && \

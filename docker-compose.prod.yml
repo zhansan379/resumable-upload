@@ -1,6 +1,7 @@
+# 生产部署（产物模式）：镜像由 CI 或 deploy.sh 在本地/Runner 构建后推送到服务器，
+# 服务器上只 docker load + up，不做任何编译。镜像名与 docker-compose.yml 保持一致。
 services:
   backend:
-    build: ./backend
     image: resumable-upload-backend
     restart: unless-stopped
     environment:
@@ -17,16 +18,20 @@ services:
       timeout: 5s
       retries: 10
       start_period: 40s
+    deploy:
+      resources:
+        limits:
+          # 与 Xmx256m 匹配，保护同机其他业务
+          memory: 512M
 
   nginx:
-    build: ./frontend
     image: resumable-upload-nginx
     restart: unless-stopped
     depends_on:
       backend:
         condition: service_healthy
     ports:
-      # 默认对外 8080，避免与宿主机已有 80 端口服务冲突
+      # 80 被同机现有 nginx 占用，本项目对外使用 8080
       - "8080:80"
 
 volumes:

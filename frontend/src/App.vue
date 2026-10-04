@@ -29,7 +29,10 @@ function addFiles(fileList) {
       continue
     }
     const task = reactive({
-      id: crypto.randomUUID(),
+      // crypto.randomUUID 仅在 HTTPS/localhost 可用，非安全上下文（如 http://IP 访问）需降级
+      id: typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name: f.name,
       size: f.size,
       percent: 0,

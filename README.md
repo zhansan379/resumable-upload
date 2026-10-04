@@ -150,8 +150,8 @@ docker compose -f docker-compose.prod.yml down        # 停止（数据卷保留
 `.github/workflows/deploy.yml`：push 到 `main`（或手动触发）自动执行——
 
 1. Runner 上 `setup-java(17)` / `setup-node(22)` 编译后端 jar 与前端 dist；
-2. 用 `Dockerfile.artifact` 组装两个轻量镜像并 `docker save | gzip`；
-3. 经 SSH 上传到服务器，`docker load` 后 `docker compose up -d`（服务器零编译，2G 内存可平稳部署）；
+2. 只打包约 **22MB 构建产物**（jar + dist + 轻量 Dockerfile + compose 文件）经 SSH 上传，避免跨境传输 130MB+ 的整镜像；
+3. 服务器上用 `Dockerfile.artifact` 做 COPY 级镜像组装（秒级，基础镜像已在本地/或经国内镜像源拉取），`docker compose up -d`；
 4. 循环探测 `/api/files` 健康检查，结果反馈到 Actions 日志。
 
 需要在仓库 **Settings → Secrets and variables → Actions** 配置 4 个 Secrets：

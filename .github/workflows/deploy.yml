@@ -91,26 +91,22 @@ jobs:
                 -o StrictHostKeyChecking=accept-new \
                 "$SSH_USER@$SSH_HOST" "$@"
           }
-          # 基础镜像保障：本机没有时先直拉，失败再走国内镜像源引用拉取+重打标签
-          ensure_base() {
-            local img=$1
-            docker images --format '{{.Repository}}:{{.Tag}}' | grep -qx "$img" && return 0
-            docker pull -q "$img" 2>/dev/null && return 0
-            for M in docker.1ms.run docker.m.daocloud.io; do
-              if docker pull -q "$M/library/$img" 2>/dev/null; then
-                docker tag "$M/library/$img" "$img" && return 0
-              fi
-            done
-            echo "基础镜像 $img 拉取失败" >&2; return 1
-          }
-          run_ssh "mkdir -p $REMOTE_DIR"
-          cat /tmp/artifacts.tgz | run_ssh "tar -xzf - -C $REMOTE_DIR"
-          run_ssh "cd $REMOTE_DIR \
-            && ensure_base eclipse-temurin:17-jre \
-            && ensure_base nginx:1.27-alpine \
-            && docker build -q -t resumable-upload-backend -f backend/Dockerfile.artifact backend/ \
-            && docker build -q -t resumable-upload-nginx  -f frontend/Dockerfile.artifact frontend/ \
-            && docker compose -f docker-compose.prod.yml up -d"
+          # 基础镜像保障逻辑必须在服务器端执行（函数定义放进远程命令字符串里）
+          run_ssh '
+            base() {
+              docker images --format "{{.Repository}}:{{.Tag}}" | grep -qx "$1" && return 0
+              docker pull -q "$1" 2>/dev/null && return 0
+              for M in docker.1ms.run docker.m.daocloud.io; do
+                docker pull -q "$M/library/$1" 2>/dev/null && { docker tag "$M/library/$1" "$1" && return 0; }
+              done
+              echo "基础镜像 $1 拉取失败" >&2; return 1
+            }
+            cd '"$REMOTE_DIR"' || exit 1
+            base eclipse-temurin:17-jre && base nginx:1.27-alpine \
+              && docker build -q -t resumable-upload-backend -f backend/Dockerfile.artifact backend/ \
+              && docker build -q -t resumable-upload-nginx  -f frontend/Dockerfile.artifact frontend/ \
+              && docker compose -f docker-compose.prod.yml up -d
+          '
           for i in $(seq 1 60); do
             if run_ssh "curl -fsS http://localhost:8080/api/files >/dev/null 2>&1"; then
               echo "部署成功: http://$SSH_HOST:8080"

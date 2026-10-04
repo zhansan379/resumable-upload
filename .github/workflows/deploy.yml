@@ -1,0 +1,76 @@
+name: deploy
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  REMOTE_DIR: /opt/resumable-upload
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查是否已配置服务器 Secrets
+        id: guard
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          if [ -z "$SSH_HOST" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "未配置 SSH_HOST/SSH_USER/SSH_PRIVATE_KEY Secrets，本次跳过部署（配置后 push 即自动部署）"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 打包源码
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          tar --exclude='frontend/node_modules' \
+              --exclude='frontend/dist' \
+              --exclude='backend/target' \
+              --exclude='backend/data' \
+              --exclude='data' \
+              --exclude='tmp' \
+              --exclude='.git' \
+              -czf /tmp/app.tgz .
+
+      - name: 写入部署私钥
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: 上传源码并部署
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT || 22 }}
+        run: |
+          run_ssh() {
+            ssh -i ~/.ssh/deploy_key -p "$SSH_PORT" -o BatchMode=yes \
+                -o StrictHostKeyChecking=accept-new \
+                "$SSH_USER@$SSH_HOST" "$@"
+          }
+          run_ssh "mkdir -p $REMOTE_DIR"
+          cat /tmp/app.tgz | run_ssh "tar -xzf - -C $REMOTE_DIR"
+          run_ssh "cd $REMOTE_DIR && docker compose up -d --build && docker image prune -f"
+          for i in $(seq 1 60); do
+            if run_ssh "curl -fsS http://localhost/api/files >/dev/null 2>&1"; then
+              echo "部署成功: http://$SSH_HOST"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "健康检查超时，请上服务器查看: docker compose logs" >&2
+          exit 1

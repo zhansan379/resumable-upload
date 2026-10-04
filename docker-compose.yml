@@ -1,0 +1,32 @@
+services:
+  backend:
+    build: ./backend
+    image: resumable-upload-backend
+    restart: unless-stopped
+    environment:
+      UPLOAD_DIR: /data/upload
+      JAVA_OPTS: "-Xms256m -Xmx768m"
+    volumes:
+      # 上传的分片与最终文件持久化在命名卷里，重建容器不丢数据
+      - upload-data:/data/upload
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8080'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  nginx:
+    build: ./frontend
+    image: resumable-upload-nginx
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "80:80"
+
+volumes:
+  upload-data:

@@ -1,0 +1,16 @@
+# build artifacts
+backend/target/
+frontend/node_modules/
+frontend/dist/
+
+# upload data (运行时生成的分片与文件)
+backend/data/
+data/
+
+# misc
+tmp/
+testdata/
+*.log
+.idea/
+*.iml
+.DS_Store

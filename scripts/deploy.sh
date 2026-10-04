@@ -7,8 +7,9 @@ set -euo pipefail
 HOST=${1:?用法: ./scripts/deploy.sh <user@host> [ssh端口] [远程目录]}
 PORT=${2:-22}
 REMOTE_DIR=${3:-/opt/resumable-upload}
-SSH="ssh -p $PORT -o BatchMode=yes -o StrictHostKeyChecking=accept-new $HOST"
-SCP="scp -P $PORT -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
+KEY=${DEPLOY_KEY:-$HOME/.ssh/resumable-upload-deploy}
+SSH="ssh -i $KEY -p $PORT -o BatchMode=yes -o StrictHostKeyChecking=accept-new $HOST"
+SCP="scp -i $KEY -P $PORT -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
 
 echo "==> [1/5] 本地构建后端 jar"
 ( cd backend && mvn -q -B -DskipTests package )

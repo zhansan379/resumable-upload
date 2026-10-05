@@ -1,33 +1,29 @@
+# 单容器部署：Spring Boot 单进程同时提供 /api 与前端静态资源。
+# `docker compose up -d --build` 自包含构建（内部执行 Maven + Vite 构建）。
 services:
-  backend:
-    build: ./backend
-    image: resumable-upload-backend
+  app:
+    build: .
+    image: resumable-upload:latest
     restart: unless-stopped
     environment:
       UPLOAD_DIR: /data/upload
+      STATIC_DIR: /app/static
       JAVA_OPTS: "-Xms64m -Xmx256m"
     volumes:
       # 上传的分片与最终文件持久化在命名卷里，重建容器不丢数据
       - upload-data:/data/upload
-    expose:
-      - "8080"
+    ports:
+      - "8080:8080"
     healthcheck:
       test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8080'"]
       interval: 15s
       timeout: 5s
       retries: 10
       start_period: 40s
-
-  nginx:
-    build: ./frontend
-    image: resumable-upload-nginx
-    restart: unless-stopped
-    depends_on:
-      backend:
-        condition: service_healthy
-    ports:
-      # 默认对外 8080，避免与宿主机已有 80 端口服务冲突
-      - "8080:80"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
 volumes:
   upload-data:

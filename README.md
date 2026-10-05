@@ -10,6 +10,7 @@ Java (Spring Boot 3) + Vue 3 实现的大文件上传方案：**分片上传、�
 |------|------|
 | 分片上传 | 前端按分片大小（默认 5MB）`Blob.slice` 切片并发上传（默认并发 3，可调 1~6） |
 | 断点续传 | 上传前 check 接口一次返回服务端已收分片列表，跳过已传分片；状态以磁盘为事实源，**服务端重启、浏览器刷新均不丢进度** |
+| 刷新恢复 | 任务列表持久化（localStorage 存元数据 + IndexedDB 存文件引用），刷新/重开页面后任务自动恢复：上传中的任务**自动续传且跳过已算好的 MD5**；主动暂停的任务恢复为待继续；文件引用失效时提示重选同名文件 |
 | 秒传 | 前端 spark-md5（Web Worker，2MB 增量）计算整文件 MD5，服务端 hash 索引命中直接返回，不传一字节 |
 | 暂停 / 恢复 | AbortController 中断在途分片；恢复时重新 check 同步服务端状态 |
 | 失败重试 | 网络 / 5xx 错误指数退避重试 3 次；4xx 永久错误直接失败 |
@@ -108,9 +109,9 @@ data/upload/
 | blueimp | 服务端权威进度（分片状态以磁盘为准） |
 | filepond | revert 端点（取消上传清理分片） |
 
-## 服务器部署（Docker，产物模式）
+## 服务器部署（Docker，单容器 + 产物模式）
 
-针对小内存云主机（如 2C2G 且同机还有其他业务）设计的部署方式：**本地/CI 构建产物，服务器只做 COPY 级镜像组装与运行**，全程不在服务器上编译。
+**单容器架构**：Spring Boot 单进程同时提供 `/api` 接口与前端静态资源（`StaticWebConfig` 托管 dist，含 SPA 回退与 gzip 压缩），无独立 nginx。针对小内存云主机设计：**本地/CI 构建产物，服务器只做 COPY 级镜像组装与运行**，全程不在服务器上编译。
 
 ```bash
 # 一键部署（本机需 JDK17/Maven/Node，服务器需 Docker）：
@@ -118,14 +119,14 @@ data/upload/
 ./scripts/deploy.sh root@<服务器IP> 2222     # 自定义 SSH 端口
 ```
 
-脚本动作：本地 `mvn package` + `npm run build` → 上传 jar/dist/部署文件 → 服务器 `docker build -f Dockerfile.artifact`（纯 COPY，秒级）→ `docker compose -f docker-compose.prod.yml up -d` → 健康检查。
+脚本动作：本地 `mvn package` + `npm run build` → 上传 jar/static/部署文件 → 服务器 `docker build -f Dockerfile.artifact`（纯 COPY，秒级）→ `docker compose -f docker-compose.prod.yml up -d` → 健康检查。
 
 要点：
 
-- **对外端口 `8080`**（`docker-compose.prod.yml` 中映射 `8080:80`，避免与同机已有 nginx/80 端口业务冲突）；
-- 后端容器内存上限 512M（`-Xmx256m`），不挤占同机其他服务；
+- **对外端口 `8080`**，避免与同机 80 端口的现有业务冲突；
+- 容器内存上限 512M（`-Xmx256m`），不挤占同机其他服务；
 - 上传数据持久化在命名卷 `upload-data`，重建容器不丢；
-- `Dockerfile.artifact` 为薄运行时镜像；`Dockerfile` 为多阶段自包含构建（本地/大内存环境可用：`docker compose up -d --build`）。
+- `Dockerfile.artifact`（根目录）为薄运行时镜像；`Dockerfile`（根目录）为自包含构建（本地/大内存环境可用：`docker compose up -d --build`，内部完成前后端构建）。
 
 验证部署（e2e 脚本同时适用于本地与线上）：
 
@@ -138,8 +139,8 @@ BASE_URL=http://<服务器IP>:8080/api node scripts/e2e-backend.mjs
 ```bash
 cd /opt/resumable-upload
 docker compose -f docker-compose.prod.yml ps          # 状态
-docker compose -f docker-compose.prod.yml logs -f backend
-docker compose -f docker-compose.prod.yml up -d       # 加载新镜像后重启
+docker compose -f docker-compose.prod.yml logs -f app
+docker compose -f docker-compose.prod.yml up -d       # 拉取新镜像后重启
 docker compose -f docker-compose.prod.yml down        # 停止（数据卷保留）
 ```
 
@@ -147,12 +148,12 @@ docker compose -f docker-compose.prod.yml down        # 停止（数据卷保留
 
 ## CI/CD（GitHub Actions）
 
-`.github/workflows/deploy.yml`：push 到 `main`（或手动触发）自动执行，总时长约 **7 分钟**——
+`.github/workflows/deploy.yml`：push 到 `main`（或手动触发）自动执行，总时长约 **3 分钟**——
 
 1. Runner 上 `setup-java(17)` / `setup-node(22)` 编译后端 jar 与前端 dist；
-2. 用 `Dockerfile.artifact` 组装镜像并**推送到阿里云 ACR**（个人版免费；同时保留 `sha` tag 便于回滚）；
+2. 用 `Dockerfile.artifact` 组装**单镜像**并**推送到阿里云 ACR**（个人版免费；同时保留 `sha` tag 便于回滚）；
 3. 服务器从 ACR **同地域 VPC 内网地址**拉取镜像（秒级），`docker compose up -d`；
-4. 循环探测 `/api/files` 健康检查，结果反馈到 Actions 日志。
+4. 循环探测 `/api/files` 与首页健康检查，结果反馈到 Actions 日志。
 
 > 为什么不直接从 Runner SSH 传产物/镜像：GitHub 海外 Runner 到国内 ECS 的 SSH 实测仅约 40KB/s；ACR 注册表走并行分块上传 + 服务器内网拉取，吞吐高一个数量级。
 

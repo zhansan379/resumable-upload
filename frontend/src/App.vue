@@ -3,6 +3,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Uploader } from './upload/uploader'
 import { listFiles, removeFile } from './api'
+import { storeFile, restoreFile, unstoreFile, loadRecords, saveRecords } from './upload/taskStore'
 import { formatBytes, formatSpeed, STATUS_MAP } from './utils/format'
 
 const chunkSizeMB = ref(5)
@@ -12,14 +13,50 @@ const fileInput = ref(null)
 const tasks = reactive([])
 const files = ref([])
 
-onMounted(refreshFiles)
+function newTaskId() {
+  // crypto.randomUUID 仅在 HTTPS/localhost 可用，非安全上下文（如 http://IP 访问）需降级
+  return typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
 
-async function refreshFiles() {
-  try {
-    files.value = await listFiles()
-  } catch {
-    /* 服务端未就绪时静默 */
-  }
+// 任务元数据写入 localStorage（进度不落盘：服务端磁盘是唯一事实源，恢复时重新 check 对齐）
+function syncRecords() {
+  saveRecords(tasks.map((t) => ({
+    id: t.id,
+    name: t.name,
+    size: t.size,
+    lastModified: t.lastModified,
+    type: t.type,
+    fileHash: t.fileHash,
+    status: t.status,
+    message: t.message
+  })))
+}
+
+function createTask(file, saved = null) {
+  const task = reactive({
+    id: saved?.id || newTaskId(),
+    name: file.name,
+    size: file.size,
+    lastModified: file.lastModified,
+    type: file.type,
+    percent: 0,
+    speed: 0,
+    hashPercent: 0,
+    fileHash: saved?.fileHash || '',
+    status: 'waiting',
+    message: saved?.message || '',
+    instant: false,
+    uploader: null
+  })
+  task.uploader = new Uploader(file, {
+    chunkSize: chunkSizeMB.value * 1024 * 1024,
+    concurrency: concurrency.value,
+    initialHash: saved?.fileHash || null,
+    onEvent: (e) => handleEvent(task, e)
+  })
+  return task
 }
 
 function addFiles(fileList) {
@@ -28,28 +65,16 @@ function addFiles(fileList) {
       ElMessage.warning(`空文件无法分片上传：${f.name}`)
       continue
     }
-    const task = reactive({
-      // crypto.randomUUID 仅在 HTTPS/localhost 可用，非安全上下文（如 http://IP 访问）需降级
-      id: typeof crypto.randomUUID === 'function'
-        ? crypto.randomUUID()
-        : `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      name: f.name,
-      size: f.size,
-      percent: 0,
-      speed: 0,
-      hashPercent: 0,
-      fileHash: '',
-      status: 'waiting',
-      message: '',
-      instant: false,
-      uploader: null
-    })
-    task.uploader = new Uploader(f, {
-      chunkSize: chunkSizeMB.value * 1024 * 1024,
-      concurrency: concurrency.value,
-      onEvent: (e) => handleEvent(task, e)
-    })
-    tasks.unshift(task)
+    // 与"待重选文件"的恢复记录配对：同名同大小的文件直接顶替失效记录
+    const missing = tasks.find((t) => t.status === 'missing' && t.name === f.name && t.size === f.size)
+    const task = createTask(f, missing ? { id: missing.id } : null)
+    if (missing) {
+      tasks.splice(tasks.indexOf(missing), 1, task)
+    } else {
+      tasks.unshift(task)
+    }
+    storeFile(task.id, f).catch(() => {})
+    syncRecords()
     task.uploader.start()
   }
 }
@@ -61,6 +86,7 @@ function handleEvent(task, e) {
       break
     case 'hash':
       task.fileHash = e.fileHash
+      syncRecords()
       break
     case 'progress':
       task.percent = e.percent
@@ -68,17 +94,21 @@ function handleEvent(task, e) {
       break
     case 'state':
       task.status = task.uploader.state
+      syncRecords()
       break
     case 'done':
       task.status = 'done'
       task.percent = 100
       task.speed = 0
       task.instant = !!e.instant
+      unstoreFile(task.id)
+      syncRecords()
       refreshFiles()
       ElMessage.success(task.instant ? `秒传完成：${task.name}` : `上传完成：${task.name}`)
       break
     case 'error':
       task.message = e.message
+      syncRecords()
       ElMessage.error(`${task.name}：${e.message}`)
       break
   }
@@ -98,14 +128,19 @@ function resumeTask(task) {
 }
 
 async function cancelTask(task) {
-  task.uploader.cancel()
+  if (task.uploader) {
+    task.uploader.cancel()
+  }
+  unstoreFile(task.id)
   const i = tasks.indexOf(task)
   if (i >= 0) tasks.splice(i, 1)
+  syncRecords()
 }
 
 function removeTask(task) {
   const i = tasks.indexOf(task)
   if (i >= 0) tasks.splice(i, 1)
+  syncRecords()
 }
 
 async function deleteFile(row) {
@@ -132,13 +167,67 @@ function onDrop(e) {
   dragOver.value = false
   addFiles(Array.from(e.dataTransfer?.files || []))
 }
+
+async function refreshFiles() {
+  try {
+    files.value = await listFiles()
+  } catch {
+    /* 服务端未就绪时静默 */
+  }
+}
+
+// 刷新/重开页面后恢复任务列表：
+// - 上传中/等待中的任务自动续传（复用持久化的 fileHash，跳过 MD5 重算）；
+// - 用户主动暂停或出错的任务恢复为"已暂停"，等用户点继续；
+// - IndexedDB 里的文件引用失效（如浏览器清理）时标记"待重选文件"，重选同名文件即可续上。
+onMounted(async () => {
+  refreshFiles()
+  const records = loadRecords()
+  for (const r of records) {
+    let file = null
+    try {
+      file = await restoreFile(r.id)
+    } catch {
+      /* IndexedDB 不可用 */
+    }
+    if (!file || file.size !== r.size || file.name !== r.name) {
+      tasks.unshift(reactive({
+        id: r.id,
+        name: r.name,
+        size: r.size,
+        lastModified: r.lastModified || 0,
+        type: r.type || '',
+        percent: 0,
+        speed: 0,
+        hashPercent: 0,
+        fileHash: r.fileHash || '',
+        status: 'missing',
+        message: '浏览器中的文件引用已失效，重新选择同名文件即可继续上传',
+        instant: false,
+        uploader: null
+      }))
+      continue
+    }
+    const task = createTask(file, r)
+    tasks.unshift(task)
+    if (['waiting', 'hashing', 'checking', 'uploading', 'merging'].includes(r.status)) {
+      task.uploader.start()
+    } else {
+      // 用户主动暂停 / 上次出错：不自动启动
+      task.uploader.markInterrupted()
+      task.status = 'paused'
+      task.message = r.message || ''
+    }
+  }
+  syncRecords()
+})
 </script>
 
 <template>
   <div class="page">
     <header class="page-head">
       <h1>大文件分片上传 · 断点续传 / 秒传</h1>
-      <p>Spring Boot 3 + Vue 3 · 分片上传 / 暂停恢复 / 秒传 / 合并后 MD5 校验</p>
+      <p>Spring Boot 3 + Vue 3 · 分片上传 / 暂停恢复 / 秒传 / 刷新恢复任务 / 合并后 MD5 校验</p>
     </header>
 
     <el-card class="card" shadow="never">
@@ -170,7 +259,7 @@ function onDrop(e) {
           <path d="M12 12v6m0-6-2.5 2.5M12 12l2.5 2.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
         <div class="tip">点击选择文件，或将文件拖拽到此处</div>
-        <div class="sub">支持大文件分片上传 · 断点续传 · 秒传 · 暂停 / 恢复</div>
+        <div class="sub">分片上传 · 断点续传 · 秒传 · 暂停/恢复 · 刷新页面任务自动恢复</div>
       </div>
       <input ref="fileInput" type="file" multiple style="display: none" @change="onPick" />
 

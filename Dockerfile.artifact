@@ -1,0 +1,15 @@
+# ============================================================
+# 薄运行时镜像（产物模式）：直接打包已构建好的 app.jar + 前端 static/
+# 由 deploy.sh 与 CI 使用：服务器只做 COPY 级组装，秒级、不编译。
+# 上下文布局：./app.jar、./static/（即前端 dist）、./Dockerfile.artifact
+# ============================================================
+FROM eclipse-temurin:17-jre
+WORKDIR /app
+COPY app.jar app.jar
+COPY static ./static
+ENV UPLOAD_DIR=/data/upload \
+    STATIC_DIR=/app/static \
+    JAVA_OPTS="-Xms64m -Xmx256m"
+VOLUME ["/data/upload"]
+EXPOSE 8080
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]

@@ -16,12 +16,13 @@ function isAborted(err) {
  */
 export class Uploader {
 
-  constructor(file, { chunkSize, concurrency = 3, retries = 3, retryDelay = 1000, onEvent } = {}) {
+  constructor(file, { chunkSize, concurrency = 3, retries = 3, retryDelay = 1000, initialHash = null, onEvent } = {}) {
     this.file = file
     this.chunkSize = chunkSize
     this.concurrency = Math.max(1, concurrency | 0)
     this.retries = retries
     this.retryDelay = retryDelay
+    this.initialHash = initialHash // 恢复历史任务时复用已计算的 MD5，避免重新计算
     this.onEvent = onEvent || (() => {})
 
     this.totalChunks = Math.max(1, Math.ceil(file.size / this.chunkSize))
@@ -70,6 +71,14 @@ export class Uploader {
 
   /** 开始：计算 MD5 -> check -> 调度上传 -> 合并 */
   async start() {
+    if (this.initialHash) {
+      // 恢复的历史任务：MD5 已算过，直接进 check
+      this.fileHash = this.initialHash
+      this.emit('hash', { fileHash: this.fileHash })
+      if (this.cancelled) return
+      await this.checkAndRun(this.runId + 1)
+      return
+    }
     this.state = 'hashing'
     this.emit('state')
     try {
@@ -95,13 +104,23 @@ export class Uploader {
   /** 继续：重新 check 同步服务端分片状态后再调度（服务端磁盘为事实源） */
   async resume() {
     if (this.state !== 'paused' || this.cancelled) return
+    this.paused = false
     await this.checkAndRun(this.runId + 1)
   }
 
   /** 失败重试：与继续相同，重走 check 修正本地分片集合 */
   async retry() {
     if (this.state !== 'error' || this.cancelled) return
+    this.paused = false
     await this.checkAndRun(this.runId + 1)
+  }
+
+  /** 恢复历史任务时标记为暂停态，等待用户点"继续" */
+  markInterrupted() {
+    if (this.state === 'idle') {
+      this.paused = true
+      this.state = 'paused'
+    }
   }
 
   cancel() {
@@ -141,6 +160,8 @@ export class Uploader {
       }
 
       this.uploadedChunks = new Set(res.uploadedChunks || [])
+      // 立即按服务端实际进度刷新一次展示（恢复任务/续传时进度条直接对齐服务端状态）
+      this.emitProgress(true)
       if (this.uploadedChunks.size >= this.totalChunks) {
         // 分片已齐但尚未合并（上次合并请求中断），直接补一次合并
         await this.runMerge(rid)

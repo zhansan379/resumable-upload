@@ -63,19 +63,22 @@ jobs:
           npm ci --no-fund --no-audit
           npm run build
 
-      - name: 构建镜像并推送 ACR
+      - name: 组装镜像并推送 ACR
         if: steps.guard.outputs.skip != 'true'
         env:
           ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
           ACR_DOCKER_USERNAME: ${{ secrets.ACR_DOCKER_USERNAME }}
           ACR_DOCKER_PASSWORD: ${{ secrets.ACR_DOCKER_PASSWORD }}
         run: |
-          docker build -t "$ACR_IMAGE:backend" -t "$ACR_IMAGE:backend-${GITHUB_SHA::8}" -f backend/Dockerfile.artifact backend/
-          docker build -t "$ACR_IMAGE:nginx"  -t "$ACR_IMAGE:nginx-${GITHUB_SHA::8}"  -f frontend/Dockerfile.artifact frontend/
+          # 产物模式单镜像：app.jar + 前端静态资源 + 薄运行时
+          STAGE=$(mktemp -d)
+          cp backend/app.jar "$STAGE/app.jar"
+          cp -r frontend/dist "$STAGE/static"
+          cp Dockerfile.artifact "$STAGE/"
+          docker build -t "$ACR_IMAGE:app" -t "$ACR_IMAGE:app-${GITHUB_SHA::8}" "$STAGE"
           echo "$ACR_DOCKER_PASSWORD" | docker login "$ACR_REGISTRY" --username "$ACR_DOCKER_USERNAME" --password-stdin
-          # 同一镜像的第二个 tag 复用已上传的层，推送成本很低；保留 sha tag 便于回滚
-          docker push "$ACR_IMAGE:backend" && docker push "$ACR_IMAGE:backend-${GITHUB_SHA::8}"
-          docker push "$ACR_IMAGE:nginx"  && docker push "$ACR_IMAGE:nginx-${GITHUB_SHA::8}"
+          # 同时推 sha tag 便于回滚（层已上传，第二个 tag 推送成本极低）
+          docker push "$ACR_IMAGE:app" && docker push "$ACR_IMAGE:app-${GITHUB_SHA::8}"
 
       - name: 写入部署私钥
         if: steps.guard.outputs.skip != 'true'
@@ -108,14 +111,12 @@ jobs:
           echo "拉取域名: $PULL_REG (ECS 地域: $REGION)"
           run_ssh "
             set -e
-            docker pull $PULL_REG/resumable-upload/resumable-upload:backend
-            docker tag  $PULL_REG/resumable-upload/resumable-upload:backend resumable-upload-backend
-            docker pull $PULL_REG/resumable-upload/resumable-upload:nginx
-            docker tag  $PULL_REG/resumable-upload/resumable-upload:nginx  resumable-upload-nginx
-            cd $REMOTE_DIR && docker compose -f docker-compose.prod.yml up -d
+            docker pull $PULL_REG/resumable-upload/resumable-upload:app
+            docker tag  $PULL_REG/resumable-upload/resumable-upload:app resumable-upload:latest
+            cd $REMOTE_DIR && docker compose -f docker-compose.prod.yml up -d --remove-orphans
           "
           for i in $(seq 1 60); do
-            if run_ssh "curl -fsS http://localhost:8080/api/files >/dev/null 2>&1"; then
+            if run_ssh "curl -fsS http://localhost:8080/api/files >/dev/null 2>&1 && curl -fsS http://localhost:8080/ >/dev/null"; then
               echo "部署成功: http://$SSH_HOST:8080"
               exit 0
             fi

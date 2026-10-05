@@ -22,5 +22,6 @@ export const STATUS_MAP = {
   paused: { label: '已暂停', tag: 'warning' },
   merging: { label: '合并中', tag: 'warning' },
   done: { label: '已完成', tag: 'success' },
-  error: { label: '失败', tag: 'danger' }
+  error: { label: '失败', tag: 'danger' },
+  missing: { label: '待重选文件', tag: 'warning' }
 }

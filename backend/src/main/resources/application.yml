@@ -1,5 +1,10 @@
 server:
   port: 8080
+  compression:
+    # 替代 nginx 的 gzip：静态资源与 JSON 响应压缩
+    enabled: true
+    mime-types: text/html,text/css,application/javascript,application/json
+    min-response-size: 1KB
 
 spring:
   application:
@@ -12,11 +17,14 @@ spring:
       file-size-threshold: 1MB
 
 app:
+  # 单容器模式：前端静态资源目录（由 Spring Boot 直接托管）
+  # Docker 镜像内设为 /app/static；本地 vite 开发时留空
+  static-dir: ${STATIC_DIR:}
   upload:
     # 上传根目录：分片临时目录、最终文件目录、hash 索引都放在这里
     # Docker 部署时通过环境变量 UPLOAD_DIR=/data/upload 覆盖
     base-dir: ${UPLOAD_DIR:./data/upload}
-    # 合并完成后是否异步重算整体 MD5 做完整性校验（不阻塞合并响应）
+    # 合并完成后是否异步重算 MD5 校验完整性（不阻塞合并响应）
     verify-md5-after-merge: true
     # 单文件总大小上限
     max-total-size: 20GB

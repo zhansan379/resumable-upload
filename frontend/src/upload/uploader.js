@@ -137,6 +137,12 @@ export class Uploader {
   /* ---------------- 内部流程 ---------------- */
 
   async checkAndRun(rid) {
+    // 恢复的历史任务（markInterrupted 路径）没经过 start()，在此统一补上持久化的 MD5，
+    // 否则 resume()/retry() 会带着空 fileHash 去 check（后端 400 fileHash 非法）
+    if (!this.fileHash && this.initialHash) {
+      this.fileHash = this.initialHash
+      this.emit('hash', { fileHash: this.fileHash })
+    }
     this.runId = rid
     try {
       this.state = 'checking'

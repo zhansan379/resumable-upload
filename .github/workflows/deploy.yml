@@ -11,20 +11,24 @@ env:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    env:
+      # 镜像全名：crpi-xxx.cn-beijing.personal.cr.aliyuncs.com/resumable-upload/resumable-upload
+      ACR_IMAGE: ${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/resumable-upload
     concurrency:
       group: deploy-prod
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
-      - name: 检查是否已配置服务器 Secrets
+      - name: 检查是否已配置部署 Secrets
         id: guard
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
+          ACR_NAMESPACE: ${{ secrets.ACR_NAMESPACE }}
         run: |
-          if [ -z "$SSH_HOST" ]; then
+          if [ -z "$SSH_HOST" ] || [ -z "$ACR_NAMESPACE" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "未配置 SSH_HOST/SSH_USER/SSH_PRIVATE_KEY Secrets，本次跳过部署（配置后 push 即自动部署）"
+            echo "未配置 SSH_* 或 ACR_* Secrets，本次跳过部署"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
@@ -59,16 +63,19 @@ jobs:
           npm ci --no-fund --no-audit
           npm run build
 
-      - name: 打包构建产物（约 22MB，避免跨境传输整镜像）
+      - name: 构建镜像并推送 ACR
         if: steps.guard.outputs.skip != 'true'
+        env:
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          ACR_DOCKER_USERNAME: ${{ secrets.ACR_DOCKER_USERNAME }}
+          ACR_DOCKER_PASSWORD: ${{ secrets.ACR_DOCKER_PASSWORD }}
         run: |
-          mkdir -p /tmp/pkg/backend /tmp/pkg/frontend
-          cp backend/app.jar backend/Dockerfile.artifact /tmp/pkg/backend/
-          cp frontend/Dockerfile.artifact frontend/nginx.conf /tmp/pkg/frontend/
-          cp -r frontend/dist /tmp/pkg/frontend/
-          cp docker-compose.prod.yml /tmp/pkg/
-          tar -C /tmp/pkg -czf /tmp/artifacts.tgz .
-          du -h /tmp/artifacts.tgz
+          docker build -t "$ACR_IMAGE:backend" -t "$ACR_IMAGE:backend-${GITHUB_SHA::8}" -f backend/Dockerfile.artifact backend/
+          docker build -t "$ACR_IMAGE:nginx"  -t "$ACR_IMAGE:nginx-${GITHUB_SHA::8}"  -f frontend/Dockerfile.artifact frontend/
+          echo "$ACR_DOCKER_PASSWORD" | docker login "$ACR_REGISTRY" --username "$ACR_DOCKER_USERNAME" --password-stdin
+          # 同一镜像的第二个 tag 复用已上传的层，推送成本很低；保留 sha tag 便于回滚
+          docker push "$ACR_IMAGE:backend" && docker push "$ACR_IMAGE:backend-${GITHUB_SHA::8}"
+          docker push "$ACR_IMAGE:nginx"  && docker push "$ACR_IMAGE:nginx-${GITHUB_SHA::8}"
 
       - name: 写入部署私钥
         if: steps.guard.outputs.skip != 'true'
@@ -79,34 +86,34 @@ jobs:
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
-      - name: 上传产物并部署
+      - name: 服务器拉取镜像并部署
         if: steps.guard.outputs.skip != 'true'
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT || 22 }}
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
         run: |
           run_ssh() {
             ssh -i ~/.ssh/deploy_key -p "$SSH_PORT" -o BatchMode=yes \
                 -o StrictHostKeyChecking=accept-new \
                 "$SSH_USER@$SSH_HOST" "$@"
           }
-          # 基础镜像保障逻辑必须在服务器端执行（函数定义放进远程命令字符串里）
-          run_ssh '
-            base() {
-              docker images --format "{{.Repository}}:{{.Tag}}" | grep -qx "$1" && return 0
-              docker pull -q "$1" 2>/dev/null && return 0
-              for M in docker.1ms.run docker.m.daocloud.io; do
-                docker pull -q "$M/library/$1" 2>/dev/null && { docker tag "$M/library/$1" "$1" && return 0; }
-              done
-              echo "基础镜像 $1 拉取失败" >&2; return 1
-            }
-            cd '"$REMOTE_DIR"' || exit 1
-            base eclipse-temurin:17-jre && base nginx:1.27-alpine \
-              && docker build -q -t resumable-upload-backend -f backend/Dockerfile.artifact backend/ \
-              && docker build -q -t resumable-upload-nginx  -f frontend/Dockerfile.artifact frontend/ \
-              && docker compose -f docker-compose.prod.yml up -d
-          '
+          # ECS 与 ACR 同地域时走 VPC 内网域名拉取（免流量、秒级），否则走公网域名
+          REGION=$(run_ssh "curl -s -m 3 http://100.100.100.200/latest/meta-data/region-id || echo unknown")
+          PULL_REG="$ACR_REGISTRY"
+          if [ "$REGION" = "cn-beijing" ]; then
+            PULL_REG="${ACR_REGISTRY/.cn-beijing.personal.cr/-vpc.cn-beijing.personal.cr}"
+          fi
+          echo "拉取域名: $PULL_REG (ECS 地域: $REGION)"
+          run_ssh "
+            set -e
+            docker pull $PULL_REG/resumable-upload/resumable-upload:backend
+            docker tag  $PULL_REG/resumable-upload/resumable-upload:backend resumable-upload-backend
+            docker pull $PULL_REG/resumable-upload/resumable-upload:nginx
+            docker tag  $PULL_REG/resumable-upload/resumable-upload:nginx  resumable-upload-nginx
+            cd $REMOTE_DIR && docker compose -f docker-compose.prod.yml up -d
+          "
           for i in $(seq 1 60); do
             if run_ssh "curl -fsS http://localhost:8080/api/files >/dev/null 2>&1"; then
               echo "部署成功: http://$SSH_HOST:8080"

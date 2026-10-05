@@ -75,7 +75,7 @@ jobs:
           cp backend/app.jar "$STAGE/app.jar"
           cp -r frontend/dist "$STAGE/static"
           cp Dockerfile.artifact "$STAGE/"
-          docker build -t "$ACR_IMAGE:app" -t "$ACR_IMAGE:app-${GITHUB_SHA::8}" "$STAGE"
+          docker build -t "$ACR_IMAGE:app" -t "$ACR_IMAGE:app-${GITHUB_SHA::8}" -f "$STAGE/Dockerfile.artifact" "$STAGE"
           echo "$ACR_DOCKER_PASSWORD" | docker login "$ACR_REGISTRY" --username "$ACR_DOCKER_USERNAME" --password-stdin
           # 同时推 sha tag 便于回滚（层已上传，第二个 tag 推送成本极低）
           docker push "$ACR_IMAGE:app" && docker push "$ACR_IMAGE:app-${GITHUB_SHA::8}"

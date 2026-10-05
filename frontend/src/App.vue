@@ -214,10 +214,13 @@ onMounted(async () => {
     }
     const task = createTask(file, r)
     tasks.unshift(task)
-    if (['waiting', 'hashing', 'checking', 'uploading', 'merging'].includes(r.status)) {
+    // 先静默同步服务端实际进度（进度条直接对齐，且能发现"分片已齐"）
+    const peek = r.fileHash ? await task.uploader.peekProgress() : { autoMerge: true }
+    const shouldAutoResume = ['waiting', 'hashing', 'checking', 'uploading', 'merging'].includes(r.status) && peek.autoMerge
+    if (shouldAutoResume) {
       task.uploader.start()
     } else {
-      // 用户主动暂停 / 上次出错：不自动启动
+      // 主动暂停 / 上次出错 / 已暂停但分片已齐（不应自动合并）→ 恢复为已暂停等用户点继续
       task.uploader.markInterrupted()
       task.status = 'paused'
       task.message = r.message || ''

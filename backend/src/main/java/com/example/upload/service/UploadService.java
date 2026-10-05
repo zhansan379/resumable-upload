@@ -130,9 +130,7 @@ public class UploadService {
 
     public ChunkSavedResponse saveChunk(String fileHash, Integer chunkIndex, Integer totalChunks, MultipartFile chunk) {
         String hash = validateHash(fileHash);
-        if (indexStore.containsKey(hash)) {
-            throw BusinessException.conflict("该文件已存在（秒传命中），无需再上传分片");
-        }
+        // 参数校验优先于状态校验（JMeter 用例验证过：已存在文件 + 非法参数应报 400 而非 409）
         if (chunkIndex == null || chunkIndex < 0) {
             throw BusinessException.badRequest("chunkIndex 非法");
         }
@@ -144,6 +142,9 @@ public class UploadService {
         }
         if (chunk == null || chunk.isEmpty()) {
             throw BusinessException.badRequest("分片内容为空");
+        }
+        if (indexStore.containsKey(hash)) {
+            throw BusinessException.conflict("该文件已存在（秒传命中），无需再上传分片");
         }
 
         Path dir = chunksDir.resolve(hash);
@@ -352,7 +353,14 @@ public class UploadService {
         FileRecord rec = indexStore.get(hash);
         boolean removed = indexStore.remove(hash);
         if (rec != null) {
-            deleteDirQuietly(baseDir.resolve(rec.getStoredPath()).getParent());
+            // 只删目标文件本身；月份目录为多文件共享，仅在目录为空时连带清理
+            // （此前误删整个目录，会连带删除同月合并的其他文件——JMeter 下载用例发现）
+            try {
+                Files.deleteIfExists(baseDir.resolve(rec.getStoredPath()));
+                Files.deleteIfExists(baseDir.resolve(rec.getStoredPath()).getParent());
+            } catch (IOException e) {
+                log.warn("删除文件或空目录失败: {}", rec.getStoredPath(), e);
+            }
         }
         deleteDirQuietly(chunksDir.resolve(hash));
         return removed;

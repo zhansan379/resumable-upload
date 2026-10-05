@@ -123,6 +123,32 @@ export class Uploader {
     }
   }
 
+  /** 静默同步服务端实际进度（不启动上传、不改变状态）：恢复已暂停/失败任务时让进度条直接对齐。
+   *  返回 { autoMerge }：已暂停的任务即使分片已齐也不应自动合并（需用户点继续），由调用方屏蔽自动续传。 */
+  async peekProgress() {
+    const hash = this.fileHash || this.initialHash
+    if (!hash) return { autoMerge: false }
+    this.fileHash = hash
+    try {
+      const res = await checkUpload({
+        fileHash: hash,
+        fileName: this.file.name,
+        totalSize: this.file.size,
+        totalChunks: this.totalChunks,
+        chunkSize: this.chunkSize
+      })
+      if (res.finished) {
+        this.uploadedChunks = new Set(Array.from({ length: this.totalChunks }, (_, i) => i))
+      } else {
+        this.uploadedChunks = new Set(res.uploadedChunks || [])
+      }
+      this.emitProgress(true)
+      return { autoMerge: !res.finished && this.uploadedChunks.size < this.totalChunks }
+    } catch {
+      return { autoMerge: false }
+    }
+  }
+
   cancel() {
     if (this.cancelled) return
     this.cancelled = true

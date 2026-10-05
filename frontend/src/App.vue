@@ -21,17 +21,20 @@ function newTaskId() {
 }
 
 // 任务元数据写入 localStorage（进度不落盘：服务端磁盘是唯一事实源，恢复时重新 check 对齐）
+// 已完成的任务不持久化——它已进入服务器文件列表，恢复它只会产生"待重选文件"噪声
 function syncRecords() {
-  saveRecords(tasks.map((t) => ({
-    id: t.id,
-    name: t.name,
-    size: t.size,
-    lastModified: t.lastModified,
-    type: t.type,
-    fileHash: t.fileHash,
-    status: t.status,
-    message: t.message
-  })))
+  saveRecords(tasks
+    .filter((t) => t.status !== 'done')
+    .map((t) => ({
+      id: t.id,
+      name: t.name,
+      size: t.size,
+      lastModified: t.lastModified,
+      type: t.type,
+      fileHash: t.fileHash,
+      status: t.status,
+      message: t.message
+    })))
 }
 
 function createTask(file, saved = null) {
@@ -221,6 +224,11 @@ onMounted(async () => {
   }
   syncRecords()
 })
+
+// 仅开发模式：暴露任务列表给自动化测试/调试使用（生产构建不含）
+if (import.meta.env.DEV) {
+  window.__uploadTasks = tasks
+}
 </script>
 
 <template>

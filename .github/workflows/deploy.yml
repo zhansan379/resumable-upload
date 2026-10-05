@@ -109,6 +109,8 @@ jobs:
             PULL_REG="${ACR_REGISTRY/.cn-beijing.personal.cr/-vpc.cn-beijing.personal.cr}"
           fi
           echo "拉取域名: $PULL_REG (ECS 地域: $REGION)"
+          # compose 文件随仓库更新到服务器，保证服务定义与代码一致
+          cat docker-compose.prod.yml | run_ssh "cat > $REMOTE_DIR/docker-compose.prod.yml"
           run_ssh "
             set -e
             docker pull $PULL_REG/resumable-upload/resumable-upload:app

@@ -103,6 +103,7 @@ function handleEvent(task, e) {
       task.status = 'done'
       task.percent = 100
       task.speed = 0
+      task.message = ''
       task.instant = !!e.instant
       unstoreFile(task.id)
       syncRecords()

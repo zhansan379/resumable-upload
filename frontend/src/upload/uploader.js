@@ -35,6 +35,16 @@ export class Uploader {
     this.runId = 0
     this.errorMessage = ''
 
+    // 弱网自适应并发（AIMD）：分片重试耗尽的传输类失败 → 并发减半（下限 1）；
+    // 连续成功 10 片 → 并发 +1 爬回用户设定值。只动调度，不动分片大小（分片大小是任务身份，中途改变会作废断点进度）
+    this.userConcurrency = this.concurrency
+    this.effectiveConcurrency = this.concurrency
+    this.adaptRounds = 0
+    this.maxAdaptRounds = 6
+    this.successStreak = 0
+    this.requeue = []
+    this.lastChunkError = null
+
     this.speed = 0
     this.lastEmitAt = 0
     this.lastTickAt = 0
@@ -162,6 +172,26 @@ export class Uploader {
 
   /* ---------------- 内部流程 ---------------- */
 
+  /** 弱网信号：重试耗尽的传输类失败 → 并发减半（下限 1），并递增自适应轮数 */
+  adaptDown() {
+    this.adaptRounds++
+    if (this.effectiveConcurrency > 1) {
+      this.effectiveConcurrency = Math.max(1, Math.floor(this.effectiveConcurrency / 2))
+      this.successStreak = 0
+      this.emit('concurrency', { value: this.effectiveConcurrency, user: this.userConcurrency })
+    }
+  }
+
+  /** 分片成功：连续成功 10 片后并发 +1，逐步爬回用户设定值 */
+  noteSuccess() {
+    this.successStreak++
+    if (this.effectiveConcurrency < this.userConcurrency && this.successStreak >= 10) {
+      this.effectiveConcurrency++
+      this.successStreak = 0
+      this.emit('concurrency', { value: this.effectiveConcurrency, user: this.userConcurrency })
+    }
+  }
+
   async checkAndRun(rid) {
     // 恢复的历史任务（markInterrupted 路径）没经过 start()，在此统一补上持久化的 MD5，
     // 否则 resume()/retry() 会带着空 fileHash 去 check（后端 400 fileHash 非法）
@@ -234,16 +264,38 @@ export class Uploader {
   }
 
   async schedule(rid) {
+    this.adaptRounds = 0
+    this.requeue = []
     const queue = []
     for (let i = 0; i < this.totalChunks; i++) {
       if (!this.uploadedChunks.has(i)) queue.push(i)
     }
-    const workers = Math.min(this.concurrency, queue.length)
+    const workers = Math.min(this.userConcurrency, queue.length)
     await Promise.all(Array.from({ length: workers }, () => this.workerLoop(queue, rid)))
+    // 弱网自适应：workerLoop 把重试耗尽的传输失败片回队并降低并发，按新并发继续调度，
+    // 直到全部完成或达到自适应轮数上限（此后沿用整体失败语义，等待用户手动重试）
+    while (this.requeue.length && this.adaptRounds <= this.maxAdaptRounds && this.runId === rid && !this.paused && !this.cancelled) {
+      const requeued = this.requeue.splice(0)
+      for (const i of requeued) {
+        if (!this.uploadedChunks.has(i)) queue.push(i)
+      }
+      if (!queue.length) break
+      const workers = Math.min(Math.max(this.effectiveConcurrency, 1), queue.length)
+      await Promise.all(Array.from({ length: workers }, () => this.workerLoop(queue, rid)))
+    }
+    const remain = queue.length + this.requeue.length
+    if (remain > 0 && this.runId === rid && !this.paused && !this.cancelled) {
+      throw this.lastChunkError || new Error(`分片上传失败：${remain} 片未完成`)
+    }
   }
 
   async workerLoop(queue, rid) {
     while (this.runId === rid && !this.paused && !this.cancelled) {
+      // 并发闸门：在途分片达到当前自适应并发时不取新任务（降并发后多余的 worker 自然闲置）
+      if (this.inflight.size >= this.effectiveConcurrency) {
+        await sleep(120)
+        continue
+      }
       const index = queue.shift()
       if (index === undefined) return
       await this.uploadChunkWithRetry(index)
@@ -276,6 +328,7 @@ export class Uploader {
           })
           this.uploadedChunks.add(index)
           item.loaded = size
+          this.noteSuccess()
           this.emitProgress(true)
           return
         } catch (err) {
@@ -283,7 +336,18 @@ export class Uploader {
           const status = err?.response?.status
           // 4xx（除 429）为永久错误，重试无意义，直接失败
           const permanent = status && status >= 400 && status < 500 && status !== 429
-          if (permanent || attempt >= this.retries) throw err
+          if (!permanent) this.successStreak = 0
+          if (permanent || attempt >= this.retries) {
+            // 传输类失败且重试耗尽 = 弱网信号：降低并发并把该片放回队列，
+            // 由 schedule 按新并发再调度；不超过自适应轮数上限
+            if (!permanent && this.adaptRounds < this.maxAdaptRounds) {
+              this.adaptDown()
+              this.lastChunkError = err
+              this.requeue.push(index)
+              return
+            }
+            throw err
+          }
           await sleep(this.retryDelay * (attempt + 1))
           if (controller.signal.aborted) throw err
         }

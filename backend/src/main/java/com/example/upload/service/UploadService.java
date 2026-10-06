@@ -12,7 +12,10 @@ import com.example.upload.store.FileRecord;
 import com.example.upload.store.HashIndexStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpStatus;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.util.unit.DataSize;
 import org.springframework.web.multipart.MultipartFile;
@@ -188,6 +191,14 @@ public class UploadService {
                     "文件总大小超过服务端上限 " + props.getMaxTotalSize());
         }
 
+        // 磁盘水位前置检查：合并需要再写一份完整文件（分片仍在盘上）。
+        // 不能指望 ENOSPC——ext4 延迟分配可能让它静默通过并留下残缺文件，必须显式拒绝（tus 语义 507）
+        long usable = filesDir.toFile().getUsableSpace();
+        if (usable > 0 && usable < req.totalSize()) {
+            throw new BusinessException(HttpStatus.INSUFFICIENT_STORAGE,
+                    "服务器可用空间不足（剩余 " + usable / 1048576 + "MB，需要 " + req.totalSize() / 1048576 + "MB），请稍后重试或清理空间");
+        }
+
         String safeName = sanitizeFileName(req.fileName());
         Object lock = mergeLocks.computeIfAbsent(hash, k -> new Object());
         synchronized (lock) {
@@ -231,16 +242,23 @@ public class UploadService {
             Path target = targetDir.resolve(hash + "_" + safeName);
             try {
                 Files.createDirectories(targetDir);
-                if (Files.exists(target)) {
-                    // 上次合并成功但索引写入失败的恢复路径：文件已完整，直接复用
-                    log.warn("目标文件已存在，跳过合并直接入索引: {}", target);
+                if (Files.exists(target) && Files.size(target) == req.totalSize()) {
+                    // 上次合并成功但索引写入失败的恢复路径：文件完整，直接复用
+                    log.warn("目标文件已存在且大小一致，跳过合并直接入索引: {}", target);
                 } else {
-                    mergeChunks(hash, req.totalChunks(), target);
-                    long merged = Files.size(target);
-                    if (merged != req.totalSize()) {
-                        throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR,
-                                "合并后大小 " + merged + " 与预期 " + req.totalSize() + " 不一致");
+                    if (Files.exists(target)) {
+                        // 合并中途死亡（进程被杀/磁盘满）留下的残缺文件：
+                        // 不删除的话重试会把它当作完整文件入索引（对抗性中断测试发现的 bug）
+                        log.warn("目标文件已存在但大小不一致（{} 字节），删除后重新合并: {}",
+                                Files.size(target), target);
+                        Files.deleteIfExists(target);
                     }
+                    mergeChunks(hash, req.totalChunks(), target);
+                }
+                long merged = Files.size(target);
+                if (merged != req.totalSize()) {
+                    throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR,
+                            "合并后大小 " + merged + " 与预期 " + req.totalSize() + " 不一致");
                 }
             } catch (IOException e) {
                 throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "合并失败：" + e.getMessage());
@@ -414,5 +432,61 @@ public class UploadService {
     @PreDestroy
     public void shutdown() {
         verifyExecutor.shutdownNow();
+    }
+
+    /**
+     * 启动时补做未完成的 MD5 校验：异步校验任务随进程死亡丢失，
+     * 不补做的话 verified 会永久停留在 false（对抗性中断测试发现的场景）。
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    public void reverifyOnStartup() {
+        if (!props.isVerifyMd5AfterMerge()) {
+            return;
+        }
+        List<FileRecord> pending = indexStore.all().stream()
+                .filter(r -> !r.isVerified())
+                .toList();
+        if (pending.isEmpty()) {
+            return;
+        }
+        log.info("启动校验：发现 {} 个未完成 MD5 校验的文件，重新入队", pending.size());
+        pending.forEach(rec -> {
+            if (Files.isRegularFile(baseDir.resolve(rec.getStoredPath()))) {
+                verifyMd5Async(rec);
+            } else {
+                log.warn("启动校验跳过（文件缺失）: {}", rec.getStoredPath());
+            }
+        });
+    }
+
+    /**
+     * 定时清理孤儿分片：客户端消失（崩溃/断网/直接关页面）时取消接口不会被调用，
+     * 分片目录会永久残留，按目录最后修改时间 + TTL 兜底清理。
+     */
+    @Scheduled(fixedDelayString = "PT1H", initialDelayString = "PT60S")
+    public void cleanStaleChunks() {
+        if (!Files.isDirectory(chunksDir)) {
+            return;
+        }
+        java.time.Instant deadline = java.time.Instant.now().minus(props.getChunkTtl());
+        int cleaned = 0;
+        try (Stream<Path> dirs = Files.list(chunksDir)) {
+            for (Path dir : dirs.filter(Files::isDirectory).toList()) {
+                try {
+                    if (Files.getLastModifiedTime(dir).toInstant().isBefore(deadline)) {
+                        log.info("清理过期分片目录（TTL {}）: {}", props.getChunkTtl(), dir.getFileName());
+                        deleteDirQuietly(dir);
+                        cleaned++;
+                    }
+                } catch (IOException e) {
+                    log.warn("清理分片目录失败: {}", dir, e);
+                }
+            }
+        } catch (IOException e) {
+            log.warn("扫描分片目录失败: {}", chunksDir, e);
+        }
+        if (cleaned > 0) {
+            log.info("过期分片清理完成: {} 个目录", cleaned);
+        }
     }
 }

@@ -2,6 +2,8 @@ package com.example.upload.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.time.Duration;
+
 /**
  * 上传相关配置项，见 application.yml 中 app.upload 前缀。
  */
@@ -19,6 +21,9 @@ public class UploadProperties {
 
     /** 分片数量上限 */
     private int maxTotalChunks = 100_000;
+
+    /** 孤儿分片目录保留时长（客户端消失后无取消请求，超过该时长的分片目录被定时清理） */
+    private Duration chunkTtl = Duration.ofHours(24);
 
     public String getBaseDir() {
         return baseDir;
@@ -50,5 +55,13 @@ public class UploadProperties {
 
     public void setMaxTotalChunks(int maxTotalChunks) {
         this.maxTotalChunks = maxTotalChunks;
+    }
+
+    public Duration getChunkTtl() {
+        return chunkTtl;
+    }
+
+    public void setChunkTtl(Duration chunkTtl) {
+        this.chunkTtl = chunkTtl;
     }
 }

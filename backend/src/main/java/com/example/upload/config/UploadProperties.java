@@ -13,6 +13,9 @@ public class UploadProperties {
     /** 上传根目录 */
     private String baseDir = "./data/upload";
 
+    /** REST 前缀：控制器挂载路径与响应中的下载 URL 前缀。嵌入宿主系统时可改为 /files-api 之类避免冲突 */
+    private String apiPrefix = "/api";
+
     /** 合并完成后是否异步重算 MD5 校验完整性 */
     private boolean verifyMd5AfterMerge = true;
 
@@ -63,6 +66,14 @@ public class UploadProperties {
 
     public void setChunkTtl(Duration chunkTtl) {
         this.chunkTtl = chunkTtl;
+    }
+
+    public String getApiPrefix() {
+        return apiPrefix;
+    }
+
+    public void setApiPrefix(String apiPrefix) {
+        this.apiPrefix = apiPrefix;
     }
 
     private final Storage storage = new Storage();

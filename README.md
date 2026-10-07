@@ -51,5 +51,6 @@ Java (Spring Boot 3) + Vue 3 实现的大文件上传方案。文件切成小片
 - [docs/03-架构与实现.md](docs/03-架构与实现.md)：架构与上传流程、存储布局、API 一览、关键实现、设计借鉴
 - [docs/04-部署与CICD.md](docs/04-部署与CICD.md)：服务器 Docker 部署（一键脚本）、GitHub Actions CI/CD
 - [docs/05-生产化建议.md](docs/05-生产化建议.md)：走向生产的改造清单（数据库/对象存储/鉴权等）
+- [docs/07-组件集成指南.md](docs/07-组件集成指南.md)：**复制即用集成手册**（文件清单/适配点/验证协议/故障表，人与 AI 均可执行；配套 AI Skill 见 skills/resumable-upload-integration/）
 - [docs/06-测试报告.md](docs/06-测试报告.md)：完整测试报告（参数扫描/边界/对抗性中断/弱网注入的用例、数据与复现）
 - [jmeter/README.md](jmeter/README.md)：JMeter 测试计划使用说明与 HTML 报告生成

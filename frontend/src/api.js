@@ -1,7 +1,10 @@
 import axios from 'axios'
 
+// 嵌入宿主系统时可在页面加载前设置 window.__UPLOAD_API_PREFIX__（需与服务端 app.upload.api-prefix 一致）
+const baseURL = (typeof window !== 'undefined' && window.__UPLOAD_API_PREFIX__) || '/api'
+
 const http = axios.create({
-  baseURL: '/api',
+  baseURL,
   // 大文件分片上传不设超时，由 AbortController 控制中断
   timeout: 0
 })

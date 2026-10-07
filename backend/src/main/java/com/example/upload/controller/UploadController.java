@@ -45,7 +45,7 @@ import java.util.Map;
  * - DELETE /api/upload/{hash} 取消上传并清理分片
  */
 @RestController
-@RequestMapping("/api")
+@RequestMapping("${app.upload.api-prefix:/api}")
 public class UploadController {
 
     private final UploadService uploadService;

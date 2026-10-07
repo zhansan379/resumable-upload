@@ -103,10 +103,15 @@ public class UploadService {
         String hash = validateHash(req.fileHash());
         FileRecord rec = indexStore.get(hash);
         if (rec != null && fileStorage.exists(rec.getStoredPath())) {
-            return new CheckResponse(true, List.of(), "/api/files/" + hash + "/download",
+            return new CheckResponse(true, List.of(), downloadUrl(hash),
                     rec.getFileName(), rec.getSize(), rec.isVerified());
         }
         return new CheckResponse(false, listUploadedChunks(hash), null, null, null, null);
+    }
+
+    /** 下载 URL 统一在此构造：前缀跟随 app.upload.api-prefix 配置 */
+    private String downloadUrl(String hash) {
+        return props.getApiPrefix() + "/files/" + hash + "/download";
     }
 
     /** 已传分片编号列表（0 起），来源是存储端的实际分片状态 */
@@ -192,7 +197,7 @@ public class UploadService {
             // 重复合并保护：已入库且产物存在，直接按秒传返回
             FileRecord exist = indexStore.get(hash);
             if (exist != null && fileStorage.exists(exist.getStoredPath())) {
-                return new MergeResponse(hash, exist.getFileName(), "/api/files/" + hash + "/download",
+                return new MergeResponse(hash, exist.getFileName(), downloadUrl(hash),
                         exist.getSize(), exist.isVerified());
             }
 
@@ -246,7 +251,7 @@ public class UploadService {
             }
             notifyListeners(l -> l.onMergeCompleted(rec));
             log.info("合并完成: {} ({} bytes, {} chunks)", stored.locator(), req.totalSize(), req.totalChunks());
-            return new MergeResponse(hash, req.fileName(), "/api/files/" + hash + "/download", req.totalSize(), false);
+            return new MergeResponse(hash, req.fileName(), downloadUrl(hash), req.totalSize(), false);
         }
     }
 
@@ -292,7 +297,7 @@ public class UploadService {
         return indexStore.all().stream()
                 .map(r -> new FileItem(r.getFileHash(), r.getFileName(), r.getSize(),
                         TIME_FMT.format(LocalDateTime.ofInstant(Instant.ofEpochMilli(r.getUploadTime()), ZoneId.systemDefault())),
-                        r.isVerified(), "/api/files/" + r.getFileHash() + "/download"))
+                        r.isVerified(), downloadUrl(r.getFileHash())))
                 .sorted(Comparator.comparingLong((FileItem f) -> 0L)) // 顺序由前端处理
                 .toList();
     }

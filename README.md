@@ -1,5 +1,7 @@
 # resumable-upload · 给 AI 集成的大文件上传代码模板
 
+**简体中文** | [English](README.en.md)
+
 **这不是一个部署了就完事的上传网站，而是一份给 AI 编码代理的代码模板**：分片上传、断点续传、秒传、完整性校验、可插拔存储（本地磁盘 / S3 兼容对象存储）全部拆成边界清晰的模块，配一份 AI 可直接执行的集成手册和 Skill——目标是让 AI 在**你的**系统里把"大文件上传"这个功能快速、正确地装好，而不是让你把业务迁进本仓库。
 
 方案设计基于对 GitHub 高 star 开源项目的调研（uppy、blueimp、filepond、fine-uploader、plupload、resumable.js、flow.js、simple-uploader、tus、free-fs 等 10 多个项目）。

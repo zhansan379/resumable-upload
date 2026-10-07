@@ -13,6 +13,25 @@
 - 适配点对接：API 前缀、鉴权拦截器、**租户来源**（宿主已有 JWT/SecurityContext/MyBatis-Plus 租户体系时实现一个 `TenantResolver` Bean 对接，组件不强加自己的租户头）、存储选型（local / S3）；
 - **逐项验证协议**（curl 冒烟，每步有期望响应）——AI 集成不靠感觉，完成与否可机器判定。
 
+触发示例（直接复制给 AI，信息给得越全，AI 越少问、越少猜）：
+
+> 把大文件上传功能集成到我的项目。集成手册：https://github.com/zhansan379/resumable-upload/blob/main/docs/07-组件集成指南.md ，按手册执行，完成后跑第 6 节验证协议并逐项汇报结果。
+
+```text
+把 resumable-upload 组件集成到当前项目（Spring Boot 3.2 / Java 17，模块化单体）：
+
+1. 按集成手册执行：
+   https://github.com/zhansan379/resumable-upload/blob/main/docs/07-组件集成指南.md
+   组件代码统一放 com.mycompany.upload 包下；
+2. 存储：阿里云 OSS（桶 my-bucket，凭证读环境变量），元数据走 MyBatis-Plus，
+   数据源复用项目现有的，不要新建；
+3. 租户：我们已有自己的租户体系（登录后存在 ThreadLocal 的 LoginContext 里），
+   实现 TenantResolver 从那里取，不要要求前端再传一个组件自己的租户头；
+4. 上传/下载/删除接口必须挂到现有的登录鉴权拦截器后面；
+5. API 前缀用 /file-api，避免和现有 /api 路由冲突；
+6. 全部完成后跑手册第 6 节的验证协议，逐项给我结果，不要跳过验证就宣布完成。
+```
+
 **给人**：同一份 [docs/07-组件集成指南.md](docs/07-组件集成指南.md) 照做即可；想先看效果，`docker compose` 起 demo（[docs/02-快速启动.md](docs/02-快速启动.md)）。
 
 **为什么适合 AI 集成**：组件源码小（后端核心约 2000 行、前端核心约 550 行）、依赖极轻、SPI 边界清晰（存储 / 元数据 / 合并锁 / 租户 / 事件五个扩展点全部"默认实现 + 宿主 Bean 覆盖"）、有锚定版本与回归测试——AI 最容易翻车的"改了没验证""漏装配注解""协议字段想当然"，手册里都有对应防线。

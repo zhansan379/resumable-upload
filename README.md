@@ -89,6 +89,14 @@ https://github.com/zhansan379/resumable-upload/blob/main/docs/07-组件集成指
 - [x] **基线对比**：同一文件分别走"整文件单请求上传"和"分片上传"，对比弱网下的重传字节量与总耗时，量化分片设计的收益。（已完成：连接存活 1.5s 的极端弱网下整文件上传数学上不可能完成、分片上传 24.1s 完成，见上文）
 - [ ] **横向对比**：与 free-fs / tusd 等主流开源方案在相同环境、相同负载下压测，对比吞吐、恢复成功率与资源占用，明确相对位置。
 
+## Roadmap（TODO）
+
+- [ ] **云上对象存储实测**：MinIO / RustFS 已有容器级集成测试（S3 后端 8 用例）；补充阿里云 OSS / 腾讯云 COS / 华为云 OBS / AWS S3 **真实账号**的端到端验证——重点覆盖直传、秒传、Range 下载与各家 multipart 配额差异，沉淀一份各厂商 S3 兼容性实测记录；
+- [ ] **前端组件化**：把 uploader 核心（断点续传 / 秒传 / 弱网自适应降并发 / 刷新恢复）抽成框架无关 SDK，可选 UI 组件层（默认样式 + 主题/形态预设），发布 npm 包；
+- [ ] **前端集成 Skill 化**：仿照后端集成 Skill 提供前端接入 Skill——由用户指定如何集成：框架（Vue3 / React / uniapp）、要不要 UI（headless 还是带组件）、上传走服务端中转还是预签名直传，AI 按选择生成接入代码并给出验证步骤；
+- [ ] **React 实现**：uploader 的 React 适配层（hooks + 组件封装）；
+- [ ] **uniapp 实现**：适配 uniapp 的文件选择与上传 API（App / 小程序与浏览器的差异、小程序对请求并发与包体的限制）。
+
 ## 文档导航
 
 - [docs/07-组件集成指南.md](docs/07-组件集成指南.md)：**复制即用集成手册**（文件清单 / 适配点 / 验证协议 / 故障表，人与 AI 均可执行；配套 AI Skill 见 [skills/resumable-upload-integration/](skills/resumable-upload-integration/SKILL.md)）——**集成从这里开始**

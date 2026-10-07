@@ -14,6 +14,7 @@ public class LocalStorageBackendTest extends AbstractUploadBackendTest {
     static void localProps(DynamicPropertyRegistry registry) {
         baseDir = Path.of(System.getProperty("java.io.tmpdir"), "upload-it-local-" + UUID.randomUUID());
         registry.add("app.upload.storage.type", () -> "local");
+        registry.add("app.upload.metadata.type", () -> "json");
         registry.add("app.upload.base-dir", baseDir::toString);
     }
 }

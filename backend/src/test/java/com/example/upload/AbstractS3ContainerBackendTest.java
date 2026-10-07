@@ -36,6 +36,7 @@ public abstract class AbstractS3ContainerBackendTest extends AbstractUploadBacke
                                           String user, String password, String bucket) {
         baseDir = Path.of(System.getProperty("java.io.tmpdir"), "upload-it-s3-" + UUID.randomUUID());
         registry.add("app.upload.storage.type", () -> "s3");
+        registry.add("app.upload.metadata.type", () -> "json");
         registry.add("app.upload.base-dir", baseDir::toString);
         registry.add("app.upload.storage.s3.endpoint", () -> "http://" + host + ":" + port);
         registry.add("app.upload.storage.s3.region", () -> "us-east-1");

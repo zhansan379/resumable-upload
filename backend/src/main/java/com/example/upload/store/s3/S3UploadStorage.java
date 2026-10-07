@@ -29,10 +29,14 @@ import software.amazon.awssdk.services.s3.model.NoSuchUploadException;
 import software.amazon.awssdk.services.s3.model.Part;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.UploadPartRequest;
+import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+import software.amazon.awssdk.services.s3.presigner.model.PresignedUploadPartRequest;
+import software.amazon.awssdk.services.s3.presigner.model.UploadPartPresignRequest;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -68,14 +72,17 @@ public class S3UploadStorage implements ChunkStorage, FileStorage {
     static final int MAX_PARTS = 10_000;
 
     private final S3Client s3;
+    private final S3Presigner presigner;
     private final String bucket;
     private final String keyPrefix;
 
     /** 首个分片到达时懒创建会话，per-hash 锁防止并发重复创建 */
     private final ConcurrentHashMap<String, Object> sessionLocks = new ConcurrentHashMap<>();
 
-    public S3UploadStorage(S3Client s3, UploadProperties props) {
+    /** presigner 仅在开启预签名直传时注入（可为 null，此时调用直传方法抛状态异常） */
+    public S3UploadStorage(S3Client s3, UploadProperties props, S3Presigner presigner) {
         this.s3 = s3;
+        this.presigner = presigner;
         UploadProperties.S3 cfg = props.getStorage().getS3();
         this.bucket = cfg.getBucket();
         this.keyPrefix = cfg.getKeyPrefix() == null ? "" : cfg.getKeyPrefix().replaceAll("^/+|/+$", "");
@@ -97,6 +104,44 @@ public class S3UploadStorage implements ChunkStorage, FileStorage {
 
     String key(String fileHash) {
         return keyPrefix.isEmpty() ? fileHash : keyPrefix + "/" + fileHash;
+    }
+
+    /* ---------------- 预签名直传（direct-upload 模式，供 DirectUploadService 调用） ---------------- */
+
+    /** 创建（或复用）分片上传会话，返回 uploadId。幂等：同一 hash 重复 init 拿到同一会话。 */
+    public String initSession(String fileHash) {
+        return getOrCreateUploadId(fileHash);
+    }
+
+    /**
+     * 批量签发分片直传地址。uploadId 必须与该 hash 的进行中会话一致，
+     * 防止为已失效会话签出永不可用的 URL；分片直传后无需回传 ETag（合并时由 ListParts 取全）。
+     */
+    public List<PresignedPart> presignParts(String fileHash, String uploadId, List<Integer> chunkIndexes, Duration ttl) {
+        if (presigner == null) {
+            throw new IllegalStateException("预签名直传未开启（app.upload.storage.s3.direct-upload=false）");
+        }
+        String k = key(fileHash);
+        String actual = findUploadId(k);
+        if (actual == null || !actual.equals(uploadId)) {
+            throw new IllegalArgumentException("分片上传会话不存在或已失效，请重新 init");
+        }
+        long expiresAt = System.currentTimeMillis() + ttl.toMillis();
+        List<PresignedPart> result = new ArrayList<>();
+        for (Integer index : chunkIndexes) {
+            if (index == null || index < 0) {
+                throw new IllegalArgumentException("chunkIndex 非法: " + index);
+            }
+            PresignedUploadPartRequest presigned = presigner.presignUploadPart(UploadPartPresignRequest.builder()
+                    .signatureDuration(ttl)
+                    .uploadPartRequest(UploadPartRequest.builder()
+                            .bucket(bucket).key(k).uploadId(uploadId)
+                            .partNumber(index + 1) // 协议 0 起 → S3 1 起
+                            .build())
+                    .build());
+            result.add(new PresignedPart(index, presigned.url().toString(), expiresAt));
+        }
+        return result;
     }
 
     /* ---------------- ChunkStorage ---------------- */

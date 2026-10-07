@@ -7,7 +7,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -23,9 +22,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * 基于 index.json 的秒传索引（默认元数据实现）。
  * 事实源是存储端：index.json 仅用于秒传查询与文件列表；文件存在与否以 FileStorage.stat 为准。
  * 写入采用"临时文件 + 原子移动"，避免进程中途挂掉留下损坏的索引。
- * 多实例部署时请换 JDBC 实现（JSON 文件无法共享）。
+ * 单实例语义；多实例部署请切换 JDBC 实现（app.upload.metadata.type=jdbc）。
+ * 租户键 = {tenant}/{hash}，未启用租户时与历史版本键完全一致（旧 index.json 直接兼容）。
  */
-@Component
 public class JsonMetadataStore implements MetadataStore {
 
     private static final Logger log = LoggerFactory.getLogger(JsonMetadataStore.class);
@@ -46,7 +45,7 @@ public class JsonMetadataStore implements MetadataStore {
         try {
             FileRecord[] arr = mapper.readValue(file.toFile(), FileRecord[].class);
             for (FileRecord r : arr) {
-                map.put(r.getFileHash(), r);
+                map.put(keyOf(r), r);
             }
             log.info("已加载 hash 索引 {} 条", map.size());
         } catch (IOException e) {
@@ -56,23 +55,23 @@ public class JsonMetadataStore implements MetadataStore {
 
     @Override
     public synchronized void put(FileRecord rec) {
-        map.put(rec.getFileHash(), rec);
+        map.put(keyOf(rec), rec);
         flush();
     }
 
     @Override
-    public synchronized FileRecord get(String hash) {
-        return map.get(hash);
+    public synchronized FileRecord get(String tenant, String hash) {
+        return map.get(key(tenant, hash));
     }
 
     @Override
-    public synchronized boolean containsKey(String hash) {
-        return map.containsKey(hash);
+    public synchronized boolean containsKey(String tenant, String hash) {
+        return map.containsKey(key(tenant, hash));
     }
 
     @Override
-    public synchronized void updateVerified(String hash, boolean verified) {
-        FileRecord r = map.get(hash);
+    public synchronized void updateVerified(String tenant, String hash, boolean verified) {
+        FileRecord r = get(tenant, hash);
         if (r != null && r.isVerified() != verified) {
             r.setVerified(verified);
             flush();
@@ -80,8 +79,8 @@ public class JsonMetadataStore implements MetadataStore {
     }
 
     @Override
-    public synchronized boolean remove(String hash) {
-        boolean removed = map.remove(hash) != null;
+    public synchronized boolean remove(String tenant, String hash) {
+        boolean removed = map.remove(key(tenant, hash)) != null;
         if (removed) {
             flush();
         }
@@ -91,6 +90,14 @@ public class JsonMetadataStore implements MetadataStore {
     @Override
     public synchronized List<FileRecord> all() {
         return List.copyOf(map.values());
+    }
+
+    private String keyOf(FileRecord rec) {
+        return key(rec.getTenant(), rec.getFileHash());
+    }
+
+    private String key(String tenant, String hash) {
+        return tenant == null ? hash : tenant + "/" + hash;
     }
 
     private void flush() {

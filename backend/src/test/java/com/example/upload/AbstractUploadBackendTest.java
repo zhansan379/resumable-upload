@@ -192,6 +192,34 @@ public abstract class AbstractUploadBackendTest {
         assertThat(deletedEvents).contains(hash);
     }
 
+    @Test
+    @Order(5)
+    void merge_twice_secondIsInstantResume() {
+        byte[] c0 = fill('a', NON_LAST);
+        byte[] c1 = fill('b', 100);
+        byte[] total = concat(c0, c1);
+        String hash = md5Hex(total);
+        assertThat(uploadChunkRaw(hash, 0, 2, c0).getStatusCode().value()).isEqualTo(200);
+        assertThat(uploadChunkRaw(hash, 1, 2, c1).getStatusCode().value()).isEqualTo(200);
+
+        ResponseEntity<MergeResponse> first = rest.postForEntity("/api/upload/merge",
+                json(Map.of("fileHash", hash, "fileName", "重复合并.bin",
+                        "totalSize", (long) total.length, "totalChunks", 2, "chunkSize", NON_LAST)),
+                MergeResponse.class);
+        assertThat(first.getStatusCode().value()).isEqualTo(200);
+        assertThat(first.getBody().verified()).isFalse();
+
+        // 第二次合并：合并锁 + 已入库判定 → 按秒传返回，不重复固化
+        ResponseEntity<MergeResponse> second = rest.postForEntity("/api/upload/merge",
+                json(Map.of("fileHash", hash, "fileName", "重复合并.bin",
+                        "totalSize", (long) total.length, "totalChunks", 2, "chunkSize", NON_LAST)),
+                MergeResponse.class);
+        assertThat(second.getStatusCode().value()).isEqualTo(200);
+        assertThat(second.getBody().fileHash()).isEqualTo(hash);
+        assertThat(second.getBody().size()).isEqualTo((long) total.length);
+        assertThat(mergeEvents).contains(hash);
+    }
+
     /* ---------------- 错误语义 ---------------- */
 
     @Test

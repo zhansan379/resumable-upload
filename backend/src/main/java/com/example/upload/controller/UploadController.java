@@ -8,6 +8,7 @@ import com.example.upload.dto.MergeRequest;
 import com.example.upload.dto.MergeResponse;
 import com.example.upload.exception.BusinessException;
 import com.example.upload.service.UploadService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.ContentDisposition;
@@ -43,6 +44,7 @@ import java.util.Map;
  * - GET  /api/files/{hash}/download  下载
  * - DELETE /api/files/{hash} 删除文件
  * - DELETE /api/upload/{hash} 取消上传并清理分片
+ * 挂载前缀跟随 app.upload.api-prefix；租户跟随 app.upload.tenant.header（默认关闭）。
  */
 @RestController
 @RequestMapping("${app.upload.api-prefix:/api}")
@@ -55,8 +57,8 @@ public class UploadController {
     }
 
     @PostMapping("/upload/check")
-    public CheckResponse check(@RequestBody CheckRequest request) {
-        return uploadService.check(request);
+    public CheckResponse check(@RequestBody CheckRequest request, HttpServletRequest httpRequest) {
+        return uploadService.check(request, uploadService.currentTenant(httpRequest));
     }
 
     @PostMapping("/upload/chunk")
@@ -67,18 +69,20 @@ public class UploadController {
             @RequestParam(value = "chunkSize", required = false) Long chunkSize,
             @RequestParam(value = "totalSize", required = false) Long totalSize,
             @RequestParam(value = "fileName", required = false) String fileName,
-            @RequestPart("chunk") MultipartFile chunk) {
-        return uploadService.saveChunk(fileHash, chunkIndex, totalChunks, chunk);
+            @RequestPart("chunk") MultipartFile chunk,
+            HttpServletRequest httpRequest) {
+        return uploadService.saveChunk(fileHash, chunkIndex, totalChunks, chunk,
+                uploadService.currentTenant(httpRequest));
     }
 
     @PostMapping("/upload/merge")
-    public MergeResponse merge(@RequestBody MergeRequest request) {
-        return uploadService.merge(request);
+    public MergeResponse merge(@RequestBody MergeRequest request, HttpServletRequest httpRequest) {
+        return uploadService.merge(request, uploadService.currentTenant(httpRequest));
     }
 
     @GetMapping("/files")
-    public List<FileItem> listFiles() {
-        return uploadService.listFiles();
+    public List<FileItem> listFiles(HttpServletRequest httpRequest) {
+        return uploadService.listFiles(uploadService.currentTenant(httpRequest));
     }
 
     /**
@@ -91,8 +95,10 @@ public class UploadController {
     @GetMapping("/files/{fileHash}/download")
     public ResponseEntity<Resource> download(@PathVariable String fileHash,
                                              @RequestHeader(value = HttpHeaders.RANGE, required = false) String rangeHeader,
-                                             @RequestHeader(value = HttpHeaders.IF_RANGE, required = false) String ifRange) {
-        UploadService.DownloadInfo info = uploadService.downloadInfo(fileHash);
+                                             @RequestHeader(value = HttpHeaders.IF_RANGE, required = false) String ifRange,
+                                             HttpServletRequest httpRequest) {
+        UploadService.DownloadInfo info = uploadService.downloadInfo(fileHash,
+                uploadService.currentTenant(httpRequest));
         String etag = "\"" + fileHash + "\"";
 
         HttpHeaders headers = new HttpHeaders();
@@ -151,12 +157,12 @@ public class UploadController {
     }
 
     @DeleteMapping("/files/{fileHash}")
-    public Map<String, Object> deleteFile(@PathVariable String fileHash) {
-        return Map.of("deleted", uploadService.deleteFile(fileHash));
+    public Map<String, Object> deleteFile(@PathVariable String fileHash, HttpServletRequest httpRequest) {
+        return Map.of("deleted", uploadService.deleteFile(fileHash, uploadService.currentTenant(httpRequest)));
     }
 
     @DeleteMapping("/upload/{fileHash}")
-    public Map<String, Object> cancelUpload(@PathVariable String fileHash) {
-        return Map.of("cleaned", uploadService.cleanChunks(fileHash));
+    public Map<String, Object> cancelUpload(@PathVariable String fileHash, HttpServletRequest httpRequest) {
+        return Map.of("cleaned", uploadService.cleanChunks(fileHash, uploadService.currentTenant(httpRequest)));
     }
 }

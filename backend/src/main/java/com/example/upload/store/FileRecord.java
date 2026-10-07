@@ -10,6 +10,8 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 public class FileRecord {
 
     private String fileHash;
+    /** 租户标识（未启用租户时为 null）；秒传与列表按租户分域 */
+    private String tenant;
     private String fileName;
     private long size;
     /** 相对于上传根目录的存储路径 */
@@ -22,6 +24,12 @@ public class FileRecord {
     }
 
     public FileRecord(String fileHash, String fileName, long size, String storedPath, long uploadTime, boolean verified) {
+        this(null, fileHash, fileName, size, storedPath, uploadTime, verified);
+    }
+
+    public FileRecord(String tenant, String fileHash, String fileName, long size, String storedPath,
+                      long uploadTime, boolean verified) {
+        this.tenant = tenant;
         this.fileHash = fileHash;
         this.fileName = fileName;
         this.size = size;
@@ -36,6 +44,14 @@ public class FileRecord {
 
     public void setFileHash(String fileHash) {
         this.fileHash = fileHash;
+    }
+
+    public String getTenant() {
+        return tenant;
+    }
+
+    public void setTenant(String tenant) {
+        this.tenant = tenant;
     }
 
     public String getFileName() {

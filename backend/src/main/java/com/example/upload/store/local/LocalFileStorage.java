@@ -44,7 +44,8 @@ public class LocalFileStorage implements FileStorage {
             throws IOException {
         Path targetDir = filesDir.resolve(LocalDateTime.now().format(MONTH_FMT));
         Path target = targetDir.resolve(fileHash + "_" + safeFileName);
-        Files.createDirectories(targetDir);
+        // fileHash 可能是 {tenant}/{hash} 作用域 ID（嵌套目录），必须创建完整父链
+        Files.createDirectories(target.getParent());
 
         if (Files.exists(target) && Files.size(target) == totalSize) {
             log.warn("目标文件已存在且大小一致，跳过合并直接入索引: {}", target);

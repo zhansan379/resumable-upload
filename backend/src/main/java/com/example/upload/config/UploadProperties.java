@@ -78,9 +78,58 @@ public class UploadProperties {
 
     private final Storage storage = new Storage();
 
+    private final Metadata metadata = new Metadata();
+
+    private final Tenant tenant = new Tenant();
+
     /** 存储后端配置 */
     public Storage getStorage() {
         return storage;
+    }
+
+    /** 元数据存储配置（秒传索引） */
+    public Metadata getMetadata() {
+        return metadata;
+    }
+
+    /** 租户配置 */
+    public Tenant getTenant() {
+        return tenant;
+    }
+
+    public static class Metadata {
+
+        /**
+         * 元数据实现：json（单实例，零依赖）| mybatis | mybatis-plus | auto（默认：
+         * 类路径有 MyBatis-Plus 用之，其次 MyBatis，都没有回落 json 并告警）。
+         * mybatis/mybatis-plus 模式多实例部署（配合 S3 等共享存储）。
+         */
+        private String type = "auto";
+
+        public String getType() {
+            return type;
+        }
+
+        public void setType(String type) {
+            this.type = type;
+        }
+    }
+
+    public static class Tenant {
+
+        /**
+         * 租户请求头名称；空串 = 不启用租户（默认，行为与历史版本一致）。
+         * 启用后秒传/删除/下载/列表按租户分域，头缺失或非法（[A-Za-z0-9._-]{1,64}）请求被 400 拒绝。
+         */
+        private String header = "";
+
+        public String getHeader() {
+            return header;
+        }
+
+        public void setHeader(String header) {
+            this.header = header;
+        }
     }
 
     public static class Storage {
@@ -126,6 +175,12 @@ public class UploadProperties {
 
         /** 路径风格寻址（MinIO/RustFS 必须为 true；AWS 原生为 false） */
         private boolean pathStyleAccess = true;
+
+        /** 是否开启预签名直传端点（init/part-urls），浏览器直传对象存储、服务端零带宽转发 */
+        private boolean directUpload = false;
+
+        /** 直传预签名 URL 的有效期 */
+        private Duration directUrlTtl = Duration.ofMinutes(30);
 
         public String getEndpoint() {
             return endpoint;
@@ -181,6 +236,22 @@ public class UploadProperties {
 
         public void setPathStyleAccess(boolean pathStyleAccess) {
             this.pathStyleAccess = pathStyleAccess;
+        }
+
+        public boolean isDirectUpload() {
+            return directUpload;
+        }
+
+        public void setDirectUpload(boolean directUpload) {
+            this.directUpload = directUpload;
+        }
+
+        public Duration getDirectUrlTtl() {
+            return directUrlTtl;
+        }
+
+        public void setDirectUrlTtl(Duration directUrlTtl) {
+            this.directUrlTtl = directUrlTtl;
         }
     }
 }

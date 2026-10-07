@@ -21,9 +21,26 @@ app:
   # Docker 镜像内设为 /app/static；本地 vite 开发时留空
   static-dir: ${STATIC_DIR:}
   upload:
-    # 存储后端：local（本地磁盘，默认）| s3（S3 兼容对象存储：MinIO / RustFS / AWS S3 / OSS / COS / OBS ...）
+    # 存储后端：local（本地磁盘，默认）| s3（S3 兼容对象存储：MinIO / RustFS / OSS / COS / OBS ...）
     storage:
       type: local
+      # s3 后端示例（本地 MinIO）：
+      # s3:
+      #   endpoint: http://127.0.0.1:9000
+      #   region: us-east-1            # MinIO/RustFS 任意值即可
+      #   bucket: resumable-upload
+      #   access-key: minioadmin
+      #   secret-key: minioadmin
+      #   key-prefix: files            # 最终对象 key = {key-prefix}/{fileHash}
+      #   path-style-access: true      # MinIO/RustFS 必须为 true
+      #   direct-upload: false         # 开启预签名直传端点（浏览器直传对象存储，服务端零带宽）
+      #   direct-url-ttl: 30m
+    # 元数据（秒传索引）：auto（默认，类路径有 MyBatis-Plus/MyBatis 则用之，要求已配置数据源）| json | mybatis | mybatis-plus
+    metadata:
+      type: json
+    # 租户隔离：配置请求头名即启用（如 X-Tenant-Id），秒传/删除/下载/列表按租户分域；空 = 不启用
+    tenant:
+      header: ""
       # s3 后端示例（本地 MinIO）：
       # s3:
       #   endpoint: http://127.0.0.1:9000

@@ -80,27 +80,65 @@ public class LocalChunkStorage implements ChunkStorage {
         LocalIo.deleteDirQuietly(chunksDir.resolve(fileHash));
     }
 
+    /**
+     * 清理"孤儿分片"目录：分片目录为叶子目录（无子目录）且最后修改时间早于 deadline。
+     * 启用租户时布局为 chunks/{tenant}/{hash}，故递归到叶子层判断，删除后顺带清掉空父目录。
+     */
     @Override
     public int deleteOrphansOlderThan(Instant deadline) {
         if (!Files.isDirectory(chunksDir)) {
             return 0;
         }
         int cleaned = 0;
-        try (var dirs = Files.list(chunksDir)) {
-            for (Path dir : dirs.filter(Files::isDirectory).toList()) {
-                try {
-                    if (Files.getLastModifiedTime(dir).toInstant().isBefore(deadline)) {
-                        log.info("清理过期分片目录: {}", dir.getFileName());
-                        LocalIo.deleteDirQuietly(dir);
-                        cleaned++;
-                    }
-                } catch (IOException e) {
-                    log.warn("清理分片目录失败: {}", dir, e);
-                }
-            }
+        List<Path> leafDirs = new ArrayList<>();
+        try (var walk = Files.walk(chunksDir)) {
+            walk.filter(Files::isDirectory)
+                    .filter(dir -> !dir.equals(chunksDir))
+                    .filter(LocalChunkStorage::isLeafDir)
+                    .forEach(leafDirs::add);
         } catch (IOException e) {
             log.warn("扫描分片目录失败: {}", chunksDir, e);
+            return 0;
+        }
+        for (Path dir : leafDirs) {
+            try {
+                if (Files.getLastModifiedTime(dir).toInstant().isBefore(deadline)) {
+                    log.info("清理过期分片目录: {}", chunksDir.relativize(dir));
+                    LocalIo.deleteDirQuietly(dir);
+                    pruneEmptyParents(dir.getParent());
+                    cleaned++;
+                }
+            } catch (IOException e) {
+                log.warn("清理分片目录失败: {}", dir, e);
+            }
         }
         return cleaned;
+    }
+
+    private static boolean isLeafDir(Path dir) {
+        try (var children = Files.list(dir)) {
+            return children.noneMatch(Files::isDirectory);
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    /** 删除后向上清理空租户目录（不越过 chunks 根） */
+    private void pruneEmptyParents(Path dir) {
+        while (dir != null && !dir.equals(chunksDir)) {
+            try (var children = Files.list(dir)) {
+                if (children.findAny().isPresent()) {
+                    return;
+                }
+            } catch (IOException e) {
+                return;
+            }
+            try {
+                Files.deleteIfExists(dir);
+            } catch (IOException e) {
+                return;
+            }
+            dir = dir.getParent();
+        }
     }
 }

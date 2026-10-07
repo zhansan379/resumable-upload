@@ -40,7 +40,7 @@ https://github.com/zhansan379/resumable-upload/blob/main/docs/07-组件集成指
 7. 全部完成后跑手册第 6 节的验证协议，逐项汇报结果，不要跳过验证就宣布完成。
 ```
 
-**给人**：同一份 [docs/07-组件集成指南.md](docs/07-组件集成指南.md) 照做即可；想先看效果，`docker compose` 起 demo（[docs/02-快速启动.md](docs/02-快速启动.md)）。
+**给人**：同一份 [docs/07-组件集成指南.md](docs/07-组件集成指南.md) 照做即可；前端侧另有一份 [前端集成 Skill](skills/resumable-upload-frontend/SKILL.md)（Vue3 直接复制面板组件，React/uniapp 用 headless 核心，含分框架工作量评估与手动验证清单）；想先看效果，`docker compose` 起 demo（[docs/02-快速启动.md](docs/02-快速启动.md)）。
 
 **为什么适合 AI 集成**：组件源码小（后端核心约 2000 行、前端核心约 550 行）、依赖极轻、SPI 边界清晰（存储 / 元数据 / 合并锁 / 租户 / 事件五个扩展点全部"默认实现 + 宿主 Bean 覆盖"）、有锚定版本与回归测试——AI 最容易翻车的"改了没验证""漏装配注解""协议字段想当然"，手册里都有对应防线。
 
@@ -60,6 +60,7 @@ https://github.com/zhansan379/resumable-upload/blob/main/docs/07-组件集成指
 - **多实例部署**：元数据进宿主数据库（**MyBatis / MyBatis-Plus 双实现，按宿主类路径自动探测**，没库则回落 JSON 文件），合并互斥自动升级为数据库租约锁；配合对象存储即可水平扩展。
 - **多租户**：租户来源可插拔——默认读请求头，宿主已有租户体系（JWT / SecurityContext / MP TenantLineHandler）时实现一个 `TenantResolver` Bean 对接；秒传 / 下载 / 删除 / 列表按租户分域，字符集校验防路径注入。
 - **预签名直传（可选）**：S3 后端开启后，浏览器直传对象存储、服务端零带宽转发；服务端只管签发分片地址、秒传判定与合并，客户端无需回传 ETag。
+- **前端组件化（复制即用）**：headless 调度核心与 UI 解耦——核心 4 文件任何框架可用；Vue3 附带零 UI 库依赖的 `<UploadPanel>` 面板组件（拖拽/进度/暂停恢复/刷新恢复开箱即用，样式整段可换）。与前件一样由 AI 复制集成，不发 npm 包。
 
 ## 测试与验证
 
@@ -92,9 +93,9 @@ https://github.com/zhansan379/resumable-upload/blob/main/docs/07-组件集成指
 ## Roadmap（TODO）
 
 - [ ] **云上对象存储实测**：MinIO / RustFS 已有容器级集成测试（S3 后端 8 用例）；补充阿里云 OSS / 腾讯云 COS / 华为云 OBS / AWS S3 **真实账号**的端到端验证——重点覆盖直传、秒传、Range 下载与各家 multipart 配额差异，沉淀一份各厂商 S3 兼容性实测记录；
-- [ ] **前端组件化**：把 uploader 核心（断点续传 / 秒传 / 弱网自适应降并发 / 刷新恢复）抽成框架无关 SDK，可选 UI 组件层（默认样式 + 主题/形态预设），发布 npm 包；
-- [ ] **前端集成 Skill 化**：仿照后端集成 Skill 提供前端接入 Skill——由用户指定如何集成：框架（Vue3 / React / uniapp）、要不要 UI（headless 还是带组件）、上传走服务端中转还是预签名直传，AI 按选择生成接入代码并给出验证步骤；
-- [ ] **React 实现**：uploader 的 React 适配层（hooks + 组件封装）；
+- [x] **前端组件化**：headless 调度核心与 UI 解耦，Vue3 面板组件 `UploadPanel.vue` 零 UI 库依赖可直接复制（**按用户要求走复制模式，不发 npm 包**）；
+- [x] **前端集成 Skill 化**：[skills/resumable-upload-frontend](skills/resumable-upload-frontend/SKILL.md)——由用户指定框架（Vue3 / React / uniapp）、要不要 UI、上传模式（中转/直传），AI 按选择执行复制与改造并给出验证清单；
+- [ ] **React 实现**：uploader 的 React 适配层（hooks + 组件封装，headless 核心已就绪，缺适配层与示例）；
 - [ ] **uniapp 实现**：适配 uniapp 的文件选择与上传 API（App / 小程序与浏览器的差异、小程序对请求并发与包体的限制）。
 
 ## 文档导航

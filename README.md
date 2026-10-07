@@ -13,23 +13,31 @@
 - 适配点对接：API 前缀、鉴权拦截器、**租户来源**（宿主已有 JWT/SecurityContext/MyBatis-Plus 租户体系时实现一个 `TenantResolver` Bean 对接，组件不强加自己的租户头）、存储选型（local / S3）；
 - **逐项验证协议**（curl 冒烟，每步有期望响应）——AI 集成不靠感觉，完成与否可机器判定。
 
-触发示例（直接复制给 AI，信息给得越全，AI 越少问、越少猜）：
+触发示例：**把每一项按你的情况改好再发给 AI；不确定的项留空并加一句"先探索项目再问我"**。信息给得越全，AI 越少问、越少猜。
 
-> 把大文件上传功能集成到我的项目。集成手册：https://github.com/zhansan379/resumable-upload/blob/main/docs/07-组件集成指南.md ，按手册执行，完成后跑第 6 节验证协议并逐项汇报结果。
+> 最小版：把大文件上传功能集成到我的项目。集成手册：https://github.com/zhansan379/resumable-upload/blob/main/docs/07-组件集成指南.md ，按手册执行；不确定的选项先探索我的项目再和我确认；完成后跑第 6 节验证协议并逐项汇报结果。
 
 ```text
-把 resumable-upload 组件集成到当前项目（Spring Boot 3.2 / Java 17，模块化单体）：
+把 resumable-upload 组件集成到当前项目。按集成手册执行：
+https://github.com/zhansan379/resumable-upload/blob/main/docs/07-组件集成指南.md
 
-1. 按集成手册执行：
-   https://github.com/zhansan379/resumable-upload/blob/main/docs/07-组件集成指南.md
-   组件代码统一放 com.mycompany.upload 包下；
-2. 存储：阿里云 OSS（桶 my-bucket，凭证读环境变量），元数据走 MyBatis-Plus，
-   数据源复用项目现有的，不要新建；
-3. 租户：我们已有自己的租户体系（登录后存在 ThreadLocal 的 LoginContext 里），
-   实现 TenantResolver 从那里取，不要要求前端再传一个组件自己的租户头；
-4. 上传/下载/删除接口必须挂到现有的登录鉴权拦截器后面；
-5. API 前缀用 /file-api，避免和现有 /api 路由冲突；
-6. 全部完成后跑手册第 6 节的验证协议，逐项给我结果，不要跳过验证就宣布完成。
+1. 组件代码统一放 <包名，如 com.mycompany.upload>；
+2. 存储（选一个，不确定就让我对比推荐）：
+   □ 本地磁盘 —— 零依赖开箱即用，单实例
+   □ 自建对象存储：MinIO / RustFS —— 我提供 endpoint / 桶名 / 凭证获取方式
+   □ 云上对象存储：阿里云 OSS / 腾讯云 COS / 华为云 OBS / AWS S3 —— 我提供桶名与凭证方式
+3. 元数据（多实例与秒传索引存在哪）：
+   □ auto（推荐）：类路径有 MyBatis-Plus / MyBatis 就复用现有数据源进库，否则回落 JSON 文件
+   □ 显式指定：json / mybatis / mybatis-plus
+4. 租户（选一个）：
+   □ 自动探索：先分析我项目里已有的租户体系（JWT claims / SecurityContext / ThreadLocal /
+     MyBatis-Plus TenantLineHandler 等），把对接方案讲给我确认后再实现 TenantResolver
+   □ 手动指定：我告诉你从哪取（如统一请求头 X-Tenant-Id）
+   □ 不需要：单租户系统（注意：此时相同内容全局秒传、删除按 hash 全局生效）
+5. 鉴权：上传 / 下载 / 删除接口挂到我现有的鉴权体系后面（□ 我有现成拦截器/安全框架
+   □ 没有 —— 那样请明确提醒我匿名可写的风险）；
+6. API 前缀：□ 默认 /api  □ 我指定：<前缀>（避免和现有路由冲突）；
+7. 全部完成后跑手册第 6 节的验证协议，逐项汇报结果，不要跳过验证就宣布完成。
 ```
 
 **给人**：同一份 [docs/07-组件集成指南.md](docs/07-组件集成指南.md) 照做即可；想先看效果，`docker compose` 起 demo（[docs/02-快速启动.md](docs/02-快速启动.md)）。

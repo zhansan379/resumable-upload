@@ -44,6 +44,18 @@ https://github.com/zhansan379/resumable-upload/blob/main/docs/07-组件集成指
 
 **为什么适合 AI 集成**：组件源码小（后端核心约 2000 行、前端核心约 550 行）、依赖极轻、SPI 边界清晰（存储 / 元数据 / 合并锁 / 租户 / 事件五个扩展点全部"默认实现 + 宿主 Bean 覆盖"）、有锚定版本与回归测试——AI 最容易翻车的"改了没验证""漏装配注解""协议字段想当然"，手册里都有对应防线。
 
+### 实测记录：若依（RuoYi-Vue-Pro）框架全程 AI 集成
+
+上面的模板已在**若依（RuoYi-Vue-Pro）**上做过完整实测：由 AI 编码代理全程驱动——拉取本手册、探索宿主技术栈、与用户确认租户方案（RuoYi 无租户体系，AI 给出"不启用 / 用 userId 当租户"两个选项）、按宿主技术栈裁剪复制源码（RuoYi 是纯 MyBatis，剔除 MyBatis-Plus 实现）、对接 RuoYi 的登录鉴权，最终 275MB 文件分片上传 + 秒传在若依管理后台内原生跑通。集成过程踩的宿主环境坑（Druid 嵌套数据源、宿主全局 axios 污染 Content-Type、Windows BOM、@MapperScan 覆盖范围等 7 项）已回灌进 [Skill 的适配检查节](skills/resumable-upload-integration/SKILL.md)，下一个宿主不再踩。
+
+| 宿主环境就绪（RuoYi-Vue-Pro 本地部署） | AI 触发集成：拉手册 → 确认租户方案 |
+|--------|--------|
+| ![宿主环境就绪](docs/images/ruoyi-integration-1-host-ready.png) | ![AI 触发集成](docs/images/ruoyi-integration-2-ai-session.png) |
+
+**集成结果：若依管理后台内原生可用的上传面板（275MB 文件已完成）**
+
+![若依内上传面板可用](docs/images/ruoyi-integration-3-upload-working.png)
+
 ## 功能清单
 
 - **分片上传**：文件在浏览器里切成小片（默认 5MB 一片），多片同时传（默认 3 片并发，可调到 1~6），弱网下比整文件单发更稳。

@@ -11,7 +11,8 @@ description: 将 resumable-upload 大文件上传组件（分片上传/断点续
 
 1. **拿手册**（任选其一）：
    ```bash
-   curl -sL https://raw.githubusercontent.com/zhansan379/resumable-upload/main/docs/07-组件集成指南.md
+   # 中文路径需 URL 编码，直接用下面这条：
+   curl -sL "https://raw.githubusercontent.com/zhansan379/resumable-upload/main/docs/07-%E7%BB%84%E4%BB%B6%E9%9B%86%E6%88%90%E6%8C%87%E5%8D%97.md"
    ```
    或从用户提供的仓库副本直接读。
 2. **前置判断**：宿主必须是 Spring Boot 3.x + Java 17。不满足 → 停止，向用户说明原因，不做降级尝试。

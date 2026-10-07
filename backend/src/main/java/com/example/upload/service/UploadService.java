@@ -9,7 +9,13 @@ import com.example.upload.dto.MergeRequest;
 import com.example.upload.dto.MergeResponse;
 import com.example.upload.exception.BusinessException;
 import com.example.upload.store.FileRecord;
-import com.example.upload.store.HashIndexStore;
+import com.example.upload.store.spi.ChunkInfo;
+import com.example.upload.store.spi.ChunkStorage;
+import com.example.upload.store.spi.ContentHandle;
+import com.example.upload.store.spi.FileStorage;
+import com.example.upload.store.spi.MetadataStore;
+import com.example.upload.store.spi.StoredObject;
+import com.example.upload.store.spi.UploadEventListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -21,15 +27,10 @@ import org.springframework.util.unit.DataSize;
 import org.springframework.web.multipart.MultipartFile;
 
 import jakarta.annotation.PreDestroy;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.channels.FileChannel;
-import java.nio.file.DirectoryStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
+import java.nio.file.NoSuchFileException;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -44,16 +45,20 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 /**
- * 上传核心服务。设计要点（对应 docs/01-开源项目调研分析.md 第四节）：
- * - 磁盘为事实源：已传分片 = 分片目录下的 {index}.part 文件，服务重启不丢断点状态；
- * - 分片写入：临时文件 + 原子移动，杜绝"半个分片"被当作已传；
- * - 秒传：hash 索引命中且最终文件存在，check 直接返回 finished；
- * - 合并：fileHash 粒度加锁防并发重复合并，按分片号顺序 FileChannel 追加，先校验分片齐全与总字节一致；
- * - 完整性：合并完成后后台单线程重算整体 MD5 与 hash 比对（不阻塞合并响应）。
+ * 上传核心服务（协议层/编排层）。存储动作全部经由 SPI 委托：
+ * {@link ChunkStorage} 分片读写、{@link FileStorage} 合并产物、{@link MetadataStore} 秒传索引，
+ * 因此本地磁盘 / 对象存储（S3 兼容）切换不影响本类与 HTTP 协议。
+ * 设计要点（对应 docs/03-架构与实现.md）：
+ * - 磁盘/对象存储为事实源：已传分片以 ChunkStorage.list 为准，服务重启不丢断点状态；
+ * - 分片写入由后端保证原子性与幂等（本地 = 临时文件 + 原子移动）；
+ * - 秒传：hash 索引命中且 FileStorage 确认产物存在，check 直接返回 finished；
+ * - 合并：fileHash 粒度加锁防并发重复合并，合并前校验分片齐全与总字节一致；
+ * - 完整性：合并完成后后台单线程重算整体 MD5 与 hash 比对（不阻塞合并响应）；
+ * - 生命周期事件经 {@link UploadEventListener} 广播给集成方，单个监听器异常不影响主流程。
  */
 @Service
 public class UploadService {
@@ -62,17 +67,16 @@ public class UploadService {
 
     /** 前端 spark-md5 产出 32 位小写 MD5；放宽到 8-64 位 hex 以兼容 SHA-1/SHA-256 */
     private static final Pattern HASH_PATTERN = Pattern.compile("^[0-9a-fA-F]{8,64}$");
-    private static final DateTimeFormatter MONTH_FMT = DateTimeFormatter.ofPattern("yyyyMM");
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final UploadProperties props;
-    private final HashIndexStore indexStore;
-    private final Path baseDir;
-    private final Path chunksDir;
-    private final Path filesDir;
+    private final MetadataStore indexStore;
+    private final ChunkStorage chunkStorage;
+    private final FileStorage fileStorage;
+    private final List<UploadEventListener> listeners;
     private final long maxTotalBytes;
 
-    /** 每个 fileHash 一把合并锁，防止同一文件被并发合并 */
+    /** 每个 fileHash 一把合并锁，防止同一文件被并发合并（多实例部署需换分布式锁） */
     private final ConcurrentHashMap<String, Object> mergeLocks = new ConcurrentHashMap<>();
 
     /** MD5 后台校验线程池（单线程足够，校验慢于合并是常态） */
@@ -82,15 +86,15 @@ public class UploadService {
         return t;
     });
 
-    public UploadService(UploadProperties props, HashIndexStore indexStore) throws IOException {
+    public UploadService(UploadProperties props, MetadataStore indexStore,
+                         ChunkStorage chunkStorage, FileStorage fileStorage,
+                         List<UploadEventListener> listeners) {
         this.props = props;
         this.indexStore = indexStore;
-        this.baseDir = Paths.get(props.getBaseDir()).toAbsolutePath().normalize();
-        this.chunksDir = baseDir.resolve("chunks");
-        this.filesDir = baseDir.resolve("files");
+        this.chunkStorage = chunkStorage;
+        this.fileStorage = fileStorage;
+        this.listeners = listeners;
         this.maxTotalBytes = DataSize.parse(props.getMaxTotalSize()).toBytes();
-        Files.createDirectories(chunksDir);
-        Files.createDirectories(filesDir);
     }
 
     /* ---------------- check：秒传 + 断点续传探测 ---------------- */
@@ -98,35 +102,20 @@ public class UploadService {
     public CheckResponse check(CheckRequest req) {
         String hash = validateHash(req.fileHash());
         FileRecord rec = indexStore.get(hash);
-        if (rec != null && Files.isRegularFile(baseDir.resolve(rec.getStoredPath()))) {
+        if (rec != null && fileStorage.exists(rec.getStoredPath())) {
             return new CheckResponse(true, List.of(), "/api/files/" + hash + "/download",
                     rec.getFileName(), rec.getSize(), rec.isVerified());
         }
         return new CheckResponse(false, listUploadedChunks(hash), null, null, null, null);
     }
 
-    /** 已传分片编号列表（0 起），来源是分片目录下的实际文件 */
+    /** 已传分片编号列表（0 起），来源是存储端的实际分片状态 */
     private List<Integer> listUploadedChunks(String hash) {
-        Path dir = chunksDir.resolve(hash);
-        if (!Files.isDirectory(dir)) {
-            return List.of();
-        }
-        List<Integer> result = new ArrayList<>();
-        try (Stream<Path> stream = Files.list(dir)) {
-            stream.map(p -> p.getFileName().toString())
-                    .filter(n -> n.endsWith(".part"))
-                    .map(n -> n.substring(0, n.length() - ".part".length()))
-                    .forEach(n -> {
-                        try {
-                            result.add(Integer.parseInt(n));
-                        } catch (NumberFormatException ignored) {
-                        }
-                    });
+        try {
+            return chunkStorage.list(hash).stream().map(ChunkInfo::index).toList();
         } catch (IOException e) {
             throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "读取分片目录失败：" + e.getMessage());
         }
-        result.sort(Comparator.naturalOrder());
-        return result;
     }
 
     /* ---------------- 分片保存 ---------------- */
@@ -137,8 +126,8 @@ public class UploadService {
         if (chunkIndex == null || chunkIndex < 0) {
             throw BusinessException.badRequest("chunkIndex 非法");
         }
-        if (totalChunks == null || totalChunks < 1 || totalChunks > props.getMaxTotalChunks()) {
-            throw BusinessException.badRequest("totalChunks 非法（1 ~ " + props.getMaxTotalChunks() + "）");
+        if (totalChunks == null || totalChunks < 1 || totalChunks > effectiveMaxChunks()) {
+            throw BusinessException.badRequest("totalChunks 非法（1 ~ " + effectiveMaxChunks() + "）");
         }
         if (chunkIndex >= totalChunks) {
             throw BusinessException.badRequest("chunkIndex 超出 totalChunks 范围");
@@ -146,31 +135,28 @@ public class UploadService {
         if (chunk == null || chunk.isEmpty()) {
             throw BusinessException.badRequest("分片内容为空");
         }
+        // S3 等后端的硬约束前置到保存阶段，避免到合并才失败（能力声明见 ChunkStorage）
+        long minNonLast = chunkStorage.minNonLastPartSize();
+        if (chunkIndex < totalChunks - 1 && chunk.getSize() < minNonLast) {
+            throw BusinessException.badRequest(
+                    "存储后端要求非末片分片至少 " + minNonLast + " 字节（当前 " + chunk.getSize() + "），请增大分片大小");
+        }
         if (indexStore.containsKey(hash)) {
             throw BusinessException.conflict("该文件已存在（秒传命中），无需再上传分片");
         }
 
-        Path dir = chunksDir.resolve(hash);
-        Path tmp = dir.resolve(chunkIndex + ".part.tmp");
-        Path target = dir.resolve(chunkIndex + ".part");
+        long stored;
         try {
-            Files.createDirectories(dir);
-            try (InputStream in = chunk.getInputStream()) {
-                Files.copy(in, tmp, StandardCopyOption.REPLACE_EXISTING);
-            }
-            atomicMove(tmp, target);
-            return new ChunkSavedResponse(chunkIndex, Files.size(target));
+            stored = chunkStorage.save(hash, chunkIndex, totalChunks, chunk.getSize(), chunk.getInputStream());
         } catch (IOException e) {
             throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "分片保存失败：" + e.getMessage());
         }
+        return new ChunkSavedResponse(chunkIndex, stored);
     }
 
-    private void atomicMove(Path from, Path to) throws IOException {
-        try {
-            Files.move(from, to, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (IOException atomicUnsupported) {
-            Files.move(from, to, StandardCopyOption.REPLACE_EXISTING);
-        }
+    /** 协议层分片上限 = 配置上限与存储后端能力上限的较小值（S3 multipart 为 10000） */
+    private int effectiveMaxChunks() {
+        return Math.min(props.getMaxTotalChunks(), chunkStorage.maxChunks());
     }
 
     /* ---------------- 合并 ---------------- */
@@ -180,8 +166,8 @@ public class UploadService {
         if (req.fileName() == null || req.fileName().isBlank()) {
             throw BusinessException.badRequest("fileName 不能为空");
         }
-        if (req.totalChunks() < 1 || req.totalChunks() > props.getMaxTotalChunks()) {
-            throw BusinessException.badRequest("totalChunks 非法（1 ~ " + props.getMaxTotalChunks() + "）");
+        if (req.totalChunks() < 1 || req.totalChunks() > effectiveMaxChunks()) {
+            throw BusinessException.badRequest("totalChunks 非法（1 ~ " + effectiveMaxChunks() + "）");
         }
         if (req.totalSize() <= 0) {
             throw BusinessException.badRequest("totalSize 非法");
@@ -191,9 +177,10 @@ public class UploadService {
                     "文件总大小超过服务端上限 " + props.getMaxTotalSize());
         }
 
-        // 磁盘水位前置检查：合并需要再写一份完整文件（分片仍在盘上）。
-        // 不能指望 ENOSPC——ext4 延迟分配可能让它静默通过并留下残缺文件，必须显式拒绝（tus 语义 507）
-        long usable = filesDir.toFile().getUsableSpace();
+        // 容量水位前置检查（合并需要再写一份完整文件，分片仍在存储上）。
+        // 本地磁盘不能指望 ENOSPC——ext4 延迟分配可能让它静默通过并留下残缺文件，必须显式拒绝（tus 语义 507）；
+        // 对象存储等无法给出容量的后端返回 <=0，跳过检查
+        long usable = fileStorage.usableBytes();
         if (usable > 0 && usable < req.totalSize()) {
             throw new BusinessException(HttpStatus.INSUFFICIENT_STORAGE,
                     "服务器可用空间不足（剩余 " + usable / 1048576 + "MB，需要 " + req.totalSize() / 1048576 + "MB），请稍后重试或清理空间");
@@ -202,15 +189,26 @@ public class UploadService {
         String safeName = sanitizeFileName(req.fileName());
         Object lock = mergeLocks.computeIfAbsent(hash, k -> new Object());
         synchronized (lock) {
-            // 重复合并保护：已入库且文件在盘上，直接按秒传返回
+            // 重复合并保护：已入库且产物存在，直接按秒传返回
             FileRecord exist = indexStore.get(hash);
-            if (exist != null && Files.isRegularFile(baseDir.resolve(exist.getStoredPath()))) {
+            if (exist != null && fileStorage.exists(exist.getStoredPath())) {
                 return new MergeResponse(hash, exist.getFileName(), "/api/files/" + hash + "/download",
                         exist.getSize(), exist.isVerified());
             }
 
-            // 1. 分片齐全性校验
-            Set<Integer> have = new HashSet<>(listUploadedChunks(hash));
+            // 1. 分片齐全性 + 总字节校验（一次 list 同时拿到编号与每片大小）
+            List<ChunkInfo> infos;
+            try {
+                infos = chunkStorage.list(hash);
+            } catch (IOException e) {
+                throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "读取分片目录失败：" + e.getMessage());
+            }
+            Set<Integer> have = new HashSet<>();
+            long sum = 0;
+            for (ChunkInfo info : infos) {
+                have.add(info.index());
+                sum += info.size();
+            }
             List<Integer> missing = new ArrayList<>();
             for (int i = 0; i < req.totalChunks(); i++) {
                 if (!have.contains(i)) {
@@ -222,80 +220,33 @@ public class UploadService {
                 throw BusinessException.conflict("分片缺失 " + missing.size() + " 个：" + shown
                         + (missing.size() > 10 ? " ..." : "") + "，请继续上传后重试");
             }
-
-            // 2. 总字节校验
-            long sum = 0;
-            for (int i = 0; i < req.totalChunks(); i++) {
-                try {
-                    sum += Files.size(chunksDir.resolve(hash).resolve(i + ".part"));
-                } catch (IOException e) {
-                    throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "读取分片大小失败：" + e.getMessage());
-                }
-            }
             if (sum != req.totalSize()) {
                 throw BusinessException.conflict("分片总大小 " + sum + " 字节与文件大小 " + req.totalSize() + " 字节不一致，请重新上传");
             }
 
-            // 3. 按分片号顺序合并
-            String month = LocalDateTime.now().format(MONTH_FMT);
-            Path targetDir = filesDir.resolve(month);
-            Path target = targetDir.resolve(hash + "_" + safeName);
+            // 2. 固化为最终文件（合并/恢复语义由存储后端负责）
+            StoredObject stored;
             try {
-                Files.createDirectories(targetDir);
-                if (Files.exists(target) && Files.size(target) == req.totalSize()) {
-                    // 上次合并成功但索引写入失败的恢复路径：文件完整，直接复用
-                    log.warn("目标文件已存在且大小一致，跳过合并直接入索引: {}", target);
-                } else {
-                    if (Files.exists(target)) {
-                        // 合并中途死亡（进程被杀/磁盘满）留下的残缺文件：
-                        // 不删除的话重试会把它当作完整文件入索引（对抗性中断测试发现的 bug）
-                        log.warn("目标文件已存在但大小不一致（{} 字节），删除后重新合并: {}",
-                                Files.size(target), target);
-                        Files.deleteIfExists(target);
-                    }
-                    mergeChunks(hash, req.totalChunks(), target);
-                }
-                long merged = Files.size(target);
-                if (merged != req.totalSize()) {
-                    throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR,
-                            "合并后大小 " + merged + " 与预期 " + req.totalSize() + " 不一致");
-                }
+                stored = fileStorage.completeMerge(hash, safeName, req.totalSize(), req.totalChunks());
             } catch (IOException e) {
                 throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "合并失败：" + e.getMessage());
             }
+            if (stored.size() != req.totalSize()) {
+                throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR,
+                        "合并后大小 " + stored.size() + " 与预期 " + req.totalSize() + " 不一致");
+            }
 
-            // 4. 清理分片目录 + 写索引 + 后台校验
-            deleteDirQuietly(chunksDir.resolve(hash));
+            // 3. 清理分片 + 写索引 + 后台校验 + 事件
+            chunkStorage.deleteAll(hash);
             FileRecord rec = new FileRecord(hash, req.fileName(), req.totalSize(),
-                    baseDir.relativize(target).toString().replace('\\', '/'),
-                    System.currentTimeMillis(), false);
+                    stored.locator(), System.currentTimeMillis(), false);
             indexStore.put(rec);
             if (props.isVerifyMd5AfterMerge()) {
                 verifyMd5Async(rec);
             }
-            log.info("合并完成: {} ({} bytes, {} chunks)", target, req.totalSize(), req.totalChunks());
+            notifyListeners(l -> l.onMergeCompleted(rec));
+            log.info("合并完成: {} ({} bytes, {} chunks)", stored.locator(), req.totalSize(), req.totalChunks());
             return new MergeResponse(hash, req.fileName(), "/api/files/" + hash + "/download", req.totalSize(), false);
-        }
-    }
-
-    /** FileChannel 按分片号顺序追加，兼容分片乱序到达（状态在磁盘上，与到达顺序无关） */
-    private void mergeChunks(String hash, int totalChunks, Path target) throws IOException {
-        try (FileChannel out = FileChannel.open(target,
-                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
-            for (int i = 0; i < totalChunks; i++) {
-                Path part = chunksDir.resolve(hash).resolve(i + ".part");
-                try (FileChannel in = FileChannel.open(part, StandardOpenOption.READ)) {
-                    long pos = 0;
-                    long size = in.size();
-                    while (pos < size) {
-                        long n = in.transferTo(pos, size - pos, out);
-                        if (n <= 0) {
-                            throw new IOException("分片 " + i + " 拷贝异常，已传输 " + pos + "/" + size);
-                        }
-                        pos += n;
-                    }
-                }
-            }
         }
     }
 
@@ -303,25 +254,25 @@ public class UploadService {
 
     private void verifyMd5Async(FileRecord rec) {
         verifyExecutor.submit(() -> {
-            Path path = baseDir.resolve(rec.getStoredPath());
-            try {
-                String actual = md5(path);
+            try (ContentHandle handle = fileStorage.open(rec.getStoredPath())) {
+                String actual = md5(handle.readFully());
                 boolean ok = actual.equalsIgnoreCase(rec.getFileHash());
                 indexStore.updateVerified(rec.getFileHash(), ok);
+                notifyListeners(l -> l.onVerifyCompleted(rec, ok));
                 if (ok) {
                     log.info("MD5 校验通过: {}", rec.getFileName());
                 } else {
-                    log.error("MD5 校验失败! 期望 {} 实际 {} 文件: {}", rec.getFileHash(), actual, path);
+                    log.error("MD5 校验失败! 期望 {} 实际 {} 文件: {}", rec.getFileHash(), actual, rec.getStoredPath());
                 }
             } catch (Exception e) {
-                log.error("MD5 校验执行失败: {}", path, e);
+                log.error("MD5 校验执行失败: {}", rec.getStoredPath(), e);
             }
         });
     }
 
-    private String md5(Path path) throws Exception {
+    private String md5(InputStream in) throws Exception {
         MessageDigest digest = MessageDigest.getInstance("MD5");
-        try (InputStream in = Files.newInputStream(path, StandardOpenOption.READ)) {
+        try (in) {
             byte[] buf = new byte[64 * 1024];
             int n;
             while ((n = in.read(buf)) > 0) {
@@ -346,7 +297,7 @@ public class UploadService {
                 .toList();
     }
 
-    public record DownloadInfo(Path path, String fileName, long size) {
+    public record DownloadInfo(String fileName, long size, String locator) {
     }
 
     public DownloadInfo downloadInfo(String fileHash) {
@@ -355,12 +306,22 @@ public class UploadService {
         if (rec == null) {
             throw BusinessException.notFound("文件不存在: " + hash);
         }
-        Path path = baseDir.resolve(rec.getStoredPath());
-        if (!Files.isRegularFile(path)) {
-            throw BusinessException.notFound("文件已丢失: " + hash);
-        }
         try {
-            return new DownloadInfo(path, rec.getFileName(), Files.size(path));
+            var so = fileStorage.stat(rec.getStoredPath());
+            return new DownloadInfo(rec.getFileName(), so.size(), so.locator());
+        } catch (FileNotFoundException | NoSuchFileException e) {
+            throw BusinessException.notFound("文件已丢失: " + hash);
+        } catch (IOException e) {
+            throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "读取文件信息失败");
+        }
+    }
+
+    /** 打开最终文件内容句柄（控制器用它做全量下载与 Range 区间下载） */
+    public ContentHandle openContent(String locator) {
+        try {
+            return fileStorage.open(locator);
+        } catch (FileNotFoundException | NoSuchFileException e) {
+            throw BusinessException.notFound("文件已丢失");
         } catch (IOException e) {
             throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "读取文件信息失败");
         }
@@ -371,23 +332,18 @@ public class UploadService {
         FileRecord rec = indexStore.get(hash);
         boolean removed = indexStore.remove(hash);
         if (rec != null) {
-            // 只删目标文件本身；月份目录为多文件共享，仅在目录为空时连带清理
-            // （此前误删整个目录，会连带删除同月合并的其他文件——JMeter 下载用例发现）
-            try {
-                Files.deleteIfExists(baseDir.resolve(rec.getStoredPath()));
-                Files.deleteIfExists(baseDir.resolve(rec.getStoredPath()).getParent());
-            } catch (IOException e) {
-                log.warn("删除文件或空目录失败: {}", rec.getStoredPath(), e);
-            }
+            // 存储后端只删目标文件本身及实现私有的附属物（本地实现仅清理空目录）
+            fileStorage.delete(rec.getStoredPath());
+            notifyListeners(l -> l.onDeleted(hash));
         }
-        deleteDirQuietly(chunksDir.resolve(hash));
+        chunkStorage.deleteAll(hash);
         return removed;
     }
 
     /** 取消上传 / 清理孤儿分片（filepond 的 revert 端点思想） */
     public boolean cleanChunks(String fileHash) {
         String hash = validateHash(fileHash);
-        deleteDirQuietly(chunksDir.resolve(hash));
+        chunkStorage.deleteAll(hash);
         return true;
     }
 
@@ -412,20 +368,13 @@ public class UploadService {
         return n.isEmpty() ? "file" : n;
     }
 
-    private void deleteDirQuietly(Path dir) {
-        if (!Files.isDirectory(dir)) {
-            return;
-        }
-        try (Stream<Path> walk = Files.walk(dir)) {
-            walk.sorted(Comparator.reverseOrder()).forEach(p -> {
-                try {
-                    Files.deleteIfExists(p);
-                } catch (IOException e) {
-                    log.warn("删除失败: {}", p, e);
-                }
-            });
-        } catch (IOException e) {
-            log.warn("遍历目录失败: {}", dir, e);
+    private void notifyListeners(Consumer<UploadEventListener> call) {
+        for (UploadEventListener listener : listeners) {
+            try {
+                call.accept(listener);
+            } catch (Exception e) {
+                log.warn("上传事件监听器执行失败: {}", listener.getClass().getName(), e);
+            }
         }
     }
 
@@ -451,40 +400,26 @@ public class UploadService {
         }
         log.info("启动校验：发现 {} 个未完成 MD5 校验的文件，重新入队", pending.size());
         pending.forEach(rec -> {
-            if (Files.isRegularFile(baseDir.resolve(rec.getStoredPath()))) {
-                verifyMd5Async(rec);
-            } else {
-                log.warn("启动校验跳过（文件缺失）: {}", rec.getStoredPath());
+            try {
+                if (fileStorage.exists(rec.getStoredPath())) {
+                    verifyMd5Async(rec);
+                } else {
+                    log.warn("启动校验跳过（文件缺失）: {}", rec.getStoredPath());
+                }
+            } catch (Exception e) {
+                log.warn("启动校验跳过（读取失败）: {}", rec.getStoredPath(), e);
             }
         });
     }
 
     /**
      * 定时清理孤儿分片：客户端消失（崩溃/断网/直接关页面）时取消接口不会被调用，
-     * 分片目录会永久残留，按目录最后修改时间 + TTL 兜底清理。
+     * 分片会永久残留，按"最后更新时间 + TTL"兜底清理（本地按目录 mtime，S3 按上传会话时间）。
      */
     @Scheduled(fixedDelayString = "PT1H", initialDelayString = "PT60S")
     public void cleanStaleChunks() {
-        if (!Files.isDirectory(chunksDir)) {
-            return;
-        }
-        java.time.Instant deadline = java.time.Instant.now().minus(props.getChunkTtl());
-        int cleaned = 0;
-        try (Stream<Path> dirs = Files.list(chunksDir)) {
-            for (Path dir : dirs.filter(Files::isDirectory).toList()) {
-                try {
-                    if (Files.getLastModifiedTime(dir).toInstant().isBefore(deadline)) {
-                        log.info("清理过期分片目录（TTL {}）: {}", props.getChunkTtl(), dir.getFileName());
-                        deleteDirQuietly(dir);
-                        cleaned++;
-                    }
-                } catch (IOException e) {
-                    log.warn("清理分片目录失败: {}", dir, e);
-                }
-            }
-        } catch (IOException e) {
-            log.warn("扫描分片目录失败: {}", chunksDir, e);
-        }
+        Instant deadline = Instant.now().minus(props.getChunkTtl());
+        int cleaned = chunkStorage.deleteOrphansOlderThan(deadline);
         if (cleaned > 0) {
             log.info("过期分片清理完成: {} 个目录", cleaned);
         }

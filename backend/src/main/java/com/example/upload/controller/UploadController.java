@@ -8,7 +8,6 @@ import com.example.upload.dto.MergeRequest;
 import com.example.upload.dto.MergeResponse;
 import com.example.upload.exception.BusinessException;
 import com.example.upload.service.UploadService;
-import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.ContentDisposition;
@@ -31,11 +30,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Map;
 
@@ -118,11 +113,17 @@ public class UploadController {
         }
         if (ranges.size() != 1) {
             // 无 Range / 非法 / 多区间（multipart/byteranges 未支持）→ 200 全量
-            return ResponseEntity.ok()
-                    .headers(headers)
-                    .contentLength(info.size())
-                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                    .body(new FileSystemResource(info.path()));
+            // 不关闭句柄：流的生命周期由响应写出方接管（实现保证流关闭即释放底层资源）
+            try {
+                InputStream full = uploadService.openContent(info.locator()).readFully();
+                return ResponseEntity.ok()
+                        .headers(headers)
+                        .contentLength(info.size())
+                        .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                        .body(new InputStreamResource(full));
+            } catch (IOException e) {
+                throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "读取文件信息失败：" + e.getMessage());
+            }
         }
 
         HttpRange range = ranges.get(0);
@@ -138,7 +139,7 @@ public class UploadController {
         long length = end - start + 1;
         headers.set(HttpHeaders.CONTENT_RANGE, "bytes " + start + "-" + end + "/" + info.size());
         try {
-            InputStream regionStream = openRegion(info.path(), start, length);
+            InputStream regionStream = uploadService.openContent(info.locator()).readRange(start, length);
             return ResponseEntity.status(HttpStatus.PARTIAL_CONTENT)
                     .headers(headers)
                     .contentLength(length)
@@ -147,48 +148,6 @@ public class UploadController {
         } catch (IOException e) {
             throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "读取文件区间失败：" + e.getMessage());
         }
-    }
-
-    /** 打开文件并定位到区间起点，流被限定为最多读取 length 字节（读完即 EOF） */
-    private InputStream openRegion(Path path, long start, long length) throws IOException {
-        FileChannel channel = FileChannel.open(path, StandardOpenOption.READ);
-        channel.position(start);
-        return new InputStream() {
-            private long remaining = length;
-
-            @Override
-            public int read() throws IOException {
-                if (remaining <= 0) {
-                    return -1;
-                }
-                int b = channel.read(ByteBuffer.allocate(1));
-                if (b < 0) {
-                    remaining = 0;
-                    return -1;
-                }
-                remaining--;
-                return b & 0xFF;
-            }
-
-            @Override
-            public int read(byte[] buf, int off, int len) throws IOException {
-                if (remaining <= 0) {
-                    return -1;
-                }
-                int n = channel.read(ByteBuffer.wrap(buf, off, (int) Math.min(len, remaining)));
-                if (n < 0) {
-                    remaining = 0;
-                    return -1;
-                }
-                remaining -= n;
-                return n;
-            }
-
-            @Override
-            public void close() throws IOException {
-                channel.close();
-            }
-        };
     }
 
     @DeleteMapping("/files/{fileHash}")

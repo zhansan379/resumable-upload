@@ -19,6 +19,8 @@
 
     <properties>
         <java.version>17</java.version>
+        <!-- 覆盖 Boot BOM 的 1.21.3：新版 docker-java 兼容 Docker Desktop 29 的 npipe 握手 -->
+        <testcontainers.version>1.21.4</testcontainers.version>
     </properties>
 
     <dependencies>
@@ -26,9 +28,26 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
+        <!-- S3 兼容对象存储后端（MinIO / RustFS / OSS / COS / OBS ... 均走 S3 协议） -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+            <version>2.55.12</version>
+        </dependency>
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>apache-client</artifactId>
+            <version>2.55.12</version>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- S3 后端集成测试：MinIO 容器（版本由 Spring Boot BOM 管理） -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

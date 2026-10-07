@@ -16,14 +16,14 @@ description: 将 resumable-upload 大文件上传组件（分片上传/断点续
    或从用户提供的仓库副本直接读。
 2. **前置判断**：宿主必须是 Spring Boot 3.x + Java 17。不满足 → 停止，向用户说明原因，不做降级尝试。
 3. **照手册执行**：第 2 节文件清单复制（注意⛔标记的演示壳文件不复制）→ 第 3/4 节步骤 → 第 5 节适配点。
-4. **必答题（动手前问用户或读宿主代码确认）**：API 前缀是否需要改、宿主的鉴权体系怎么接、存储用 local 还是 S3（S3 要拿到 endpoint/凭证/桶名）。
+4. **必答题（动手前问用户或读宿主代码确认）**：API 前缀是否需要改、宿主的鉴权体系怎么接、存储用 local 还是 S3（S3 要拿到 endpoint/凭证/桶名）、**宿主是否已有多租户体系**（JWT claims / SecurityContext / MyBatis-Plus TenantLineHandler 等——有则实现 `TenantResolver` Bean 对接，禁止默认就要求前端传组件自己的租户头）。
 5. **验证**：执行手册第 6 节的 curl 验证协议，**逐项汇报结果**。任何一步不符，查第 7 节故障表，修完重跑全链，不许跳过验证宣布完成。
 
 ## 硬规则
 
 - 禁止修改协议字段（`fileHash/chunkIndex/totalChunks/totalSize`）与错误码语义；
 - 宿主主类必须补 `@ConfigurationPropertiesScan` + `@EnableScheduling`——这是最高频的集成失败原因；
-- 多用户系统必须完成 5.3 鉴权接线，并向用户转达 5.4 的租户边界警告（fileHash 全局索引、秒传探测面）；
+- 多用户系统必须完成 5.3 鉴权接线；**租户来源必须对接宿主已有体系**（实现 `TenantResolver`，默认读请求头的 `HeaderTenantResolver` 只是无租户体系的回落方案），并向用户转达手册 5.4 的边界警告（租户域内秒传探测面等）；
 - 组件源码以手册中锚定的 commit 为准，禁止凭记忆手写组件内部实现。
 
 ## 常见故障速查

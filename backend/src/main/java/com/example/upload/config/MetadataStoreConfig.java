@@ -1,5 +1,7 @@
 package com.example.upload.config;
 
+import com.example.upload.service.HeaderTenantResolver;
+import com.example.upload.service.TenantResolver;
 import com.example.upload.store.local.JsonMetadataStore;
 import com.example.upload.store.local.LocalMergeLock;
 import com.example.upload.store.mybatis.MybatisMergeLock;
@@ -55,5 +57,12 @@ public class MetadataStoreConfig {
     @ConditionalOnMissingBean(MergeLock.class)
     public LocalMergeLock localMergeLock() {
         return new LocalMergeLock();
+    }
+
+    /** 租户来源：默认从请求头读取；宿主已有租户体系（JWT/SecurityContext/ThreadLocal 等）时注册自己的 TenantResolver Bean 覆盖 */
+    @Bean
+    @ConditionalOnMissingBean(TenantResolver.class)
+    public HeaderTenantResolver headerTenantResolver(UploadProperties props) {
+        return new HeaderTenantResolver(props);
     }
 }

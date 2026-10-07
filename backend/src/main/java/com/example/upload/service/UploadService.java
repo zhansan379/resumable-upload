@@ -73,6 +73,7 @@ public class UploadService {
     private final ChunkStorage chunkStorage;
     private final FileStorage fileStorage;
     private final MergeLock mergeLock;
+    private final TenantResolver tenantResolver;
     private final List<UploadEventListener> listeners;
     private final long maxTotalBytes;
 
@@ -85,12 +86,14 @@ public class UploadService {
 
     public UploadService(UploadProperties props, MetadataStore indexStore,
                          ChunkStorage chunkStorage, FileStorage fileStorage,
-                         MergeLock mergeLock, List<UploadEventListener> listeners) {
+                         MergeLock mergeLock, TenantResolver tenantResolver,
+                         List<UploadEventListener> listeners) {
         this.props = props;
         this.indexStore = indexStore;
         this.chunkStorage = chunkStorage;
         this.fileStorage = fileStorage;
         this.mergeLock = mergeLock;
+        this.tenantResolver = tenantResolver;
         this.listeners = listeners;
         this.maxTotalBytes = DataSize.parse(props.getMaxTotalSize()).toBytes();
     }
@@ -98,22 +101,19 @@ public class UploadService {
     /* ---------------- 租户 ---------------- */
 
     /**
-     * 从请求解析租户标识。未配置租户头（默认）→ null，行为与历史版本一致；
-     * 启用后头缺失或非法一律 400——显式失败优于静默归入默认租户。
+     * 解析当前请求的租户：来源由 {@link TenantResolver} 决定（默认读请求头，
+     * 宿主可用自己的 Bean 覆盖以对接 JWT/SecurityContext 等已有租户体系）；
+     * 字符集校验集中在本层（租户会进入存储路径与数据库键，路径注入防护不可被实现绕过）。
      */
     public String currentTenant(HttpServletRequest request) {
-        String header = props.getTenant().getHeader();
-        if (header == null || header.isBlank()) {
+        String tenant = tenantResolver.resolve(request);
+        if (tenant == null) {
             return null;
         }
-        String value = request.getHeader(header);
-        if (value == null || value.isBlank()) {
-            throw BusinessException.badRequest("缺少租户请求头 " + header);
-        }
-        if (!TENANT_PATTERN.matcher(value).matches()) {
+        if (!TENANT_PATTERN.matcher(tenant).matches()) {
             throw BusinessException.badRequest("租户标识非法（应为 1-64 位字母数字._-）");
         }
-        return value;
+        return tenant;
     }
 
     /** 存储层作用域 ID：启用租户时 {tenant}/{hash}，存储实现按不透明字符串处理（路径/键天然分域） */

@@ -1,11 +1,11 @@
 ---
 name: resumable-upload-integration
-description: 将 resumable-upload 大文件上传组件（分片上传/断点续传/秒传/可插拔存储）集成到用户的 Spring Boot 项目。当用户要求"集成大文件上传、分片上传、断点续传、秒传、resumable upload 组件"时使用。
+description: 将 resumable-upload 大文件上传组件以复制源码方式集成到用户项目——后端（Spring Boot 3：分片/断点续传/秒传/可插拔存储/多实例/多租户）与前端（Vue3/React/uniapp 上传组件）一并覆盖。当用户要求集成大文件上传、分片上传、断点续传、秒传组件（后端、前端或两者）时使用。
 ---
 
 # resumable-upload 组件集成 Skill
 
-把 [zhansan379/resumable-upload](https://github.com/zhansan379/resumable-upload) 组件以**复制源码**的方式集成进宿主 Spring Boot 项目。完整手册在仓库的 `docs/07-组件集成指南.md`——先拿到它，再严格照做。
+把 [zhansan379/resumable-upload](https://github.com/zhansan379/resumable-upload) 组件以**复制源码**方式接入宿主：后端（Spring Boot 3）与前端（Vue3/React/uniapp/原生 JS）一个流程覆盖。完整手册：[docs/07-组件集成指南.md](https://raw.githubusercontent.com/zhansan379/resumable-upload/main/docs/07-%E7%BB%84%E4%BB%B6%E9%9B%86%E6%88%90%E6%8C%87%E5%8D%97.md)（中文路径已 URL 编码）。
 
 ## 执行流程
 
@@ -15,18 +15,27 @@ description: 将 resumable-upload 大文件上传组件（分片上传/断点续
    curl -sL "https://raw.githubusercontent.com/zhansan379/resumable-upload/main/docs/07-%E7%BB%84%E4%BB%B6%E9%9B%86%E6%88%90%E6%8C%87%E5%8D%97.md"
    ```
    或从用户提供的仓库副本直接读。
-2. **前置判断**：宿主必须是 Spring Boot 3.x + Java 17。不满足 → 停止，向用户说明原因，不做降级尝试。
-3. **照手册执行**：第 2 节文件清单复制（注意⛔标记的演示壳文件不复制）→ 第 3/4 节步骤 → 第 5 节适配点。
-4. **必答题（动手前问用户或读宿主代码确认）**：API 前缀是否需要改、宿主的鉴权体系怎么接、存储用 local 还是 S3（S3 要拿到 endpoint/凭证/桶名）、**宿主是否已有多租户体系**（JWT claims / SecurityContext / MyBatis-Plus TenantLineHandler 等——有则实现 `TenantResolver` Bean 对接，禁止默认就要求前端传组件自己的租户头）。
-5. **验证**：执行手册第 6 节的 curl 验证协议，**逐项汇报结果**。任何一步不符，查第 7 节故障表，修完重跑全链，不许跳过验证宣布完成。
+2. **前置判断**：后端集成要求 Spring Boot 3.x + Java 17（不满足 → 停止并说明，不做降级尝试）；
+   前端核心要求能跑 Web Worker 与 IndexedDB 的浏览器环境（uniapp 属于移植，工作量见下）。
+3. **集成范围**：与用户确认这次接什么（□ 仅后端 □ 仅前端 □ 前后端都要）。前端依赖后端，
+   全量集成时先做后端、验证通过后再做前端。
+4. **必答题**（动手前问用户或读宿主代码确认，能自动探索的先探索再确认）：
+   - 后端：API 前缀；鉴权体系怎么接；存储选型（local / MinIO·RustFS 自建 / 云上 OSS·COS·OBS·S3——S3 要拿到 endpoint/凭证/桶名）；`metadata.type`（类路径有 MyBatis-Plus/MyBatis 且配了数据源 → auto 会自动用库，明确告知用户）；**宿主是否已有多租户体系**（JWT/SecurityContext/ThreadLocal/MP TenantLineHandler——有则实现 `TenantResolver` 对接，禁止默认要求前端传组件自己的租户头）；
+   - 前端：框架（Vue3 → 直接复制 `UploadPanel` 面板；React/其他 → headless 核心 + 自绘 UI；uniapp → 移植：axios→uni.request/uploadFile、Web Worker 不可用需换 MD5 方案、IndexedDB→uni.setStorage，工作量如实评估）；要不要 UI；token 注入方式；分片大小（S3 系后端非末片 ≥ 5MiB）；
+   - 直传模式：`s3.direct-upload` 只覆盖后端端点（init/part-urls），**前端直传适配未内置**——用户要直传时按手册 5.5 改造 api 层，如实告知工作量，不要假装复制完就支持。
+5. **执行**：
+   - 后端：按手册 §2 清单复制（⛔ `UploadApplication`/`StaticWebConfig`/`App.vue` 等演示壳不复制）→ §3 步骤（**宿主主类补 `@ConfigurationPropertiesScan` + `@EnableScheduling`**，最高频失败原因）→ §5 适配点（前缀/鉴权拦截器/租户/多实例元数据）；
+   - 前端：按手册 §4 清单复制 → api.js 改前缀、挂 token 请求拦截器 → Vue3 直接用 `<UploadPanel>`（事件 uploaded/error，参数 chunk-size-mb/concurrency）；React/其他用 headless 核心（`new Uploader(file, { chunkSize, concurrency, onEvent })`，事件与方法清单在 §4，刷新恢复语义参照 App.vue 的 onMounted）。
+6. **验证**：后端跑手册 §6 curl 协议**逐项汇报**；前端按清单手动过：进度/速度正常 → 暂停后从断点继续（不是从 0）→ 刷新页面任务恢复续传 → 同文件秒传 → 取消清理服务器分片（dev 模式可查 `window.__uploadTasks`）。任何一步不符，查手册 §7 故障表，修完重跑全链，**不许跳过验证宣布完成**。
 
 ## 硬规则
 
-- 禁止修改协议字段（`fileHash/chunkIndex/totalChunks/totalSize`）与错误码语义；
-- 宿主主类必须补 `@ConfigurationPropertiesScan` + `@EnableScheduling`——这是最高频的集成失败原因；
+- 禁止修改协议字段（`fileHash/chunkIndex/totalChunks/totalSize`）与错误码语义；前端事件状态机（waiting→hashing→checking→uploading→merging→done/error）同样不可改；
+- 宿主主类必须补 `@ConfigurationPropertiesScan` + `@EnableScheduling`；
 - 多用户系统必须完成 5.3 鉴权接线；**租户来源必须对接宿主已有体系**（实现 `TenantResolver`，默认读请求头的 `HeaderTenantResolver` 只是无租户体系的回落方案），并向用户转达手册 5.4 的边界警告（租户域内秒传探测面等）；
-- 组件源码以手册中锚定的 commit 为准，禁止凭记忆手写组件内部实现。
+- 前端：MD5 必须留在 Worker（主线程算会卡死大文件页面）；`taskStore` 的 localStorage 键与 IndexedDB 结构是刷新恢复契约，不可改；不要删 `peekProgress`/`markInterrupted`（刷新恢复与"分片已齐不自动合并"语义靠它们）；
+- 组件源码以手册中锚定的 commit 为准，禁止凭记忆手写组件内部实现；前端只消费协议，发现"后端行为与手册不符"时修后端，不改协议凑合。
 
-## 常见故障速查
+## 故障速查
 
-配置不生效→缺 `@ConfigurationPropertiesScan`；413→multipart 上限；S3 报"非末片分片至少 5242880"→前端单片调大到 5MiB；Windows 路径用正斜杠。完整表见手册第 7 节。
+配置不生效 → 缺 `@ConfigurationPropertiesScan`；孤儿分片不清 → 缺 `@EnableScheduling`；413 → multipart 上限小于单片；S3 报"非末片分片至少 5242880" → 前端分片调大到 5MiB；Windows 路径用正斜杠；前端断点失效 → 检查 taskStore 是否被改动。完整表见手册 §7。

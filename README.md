@@ -40,7 +40,7 @@ https://github.com/zhansan379/resumable-upload/blob/main/docs/07-组件集成指
 7. 全部完成后跑手册第 6 节的验证协议，逐项汇报结果，不要跳过验证就宣布完成。
 ```
 
-**给人**：同一份 [docs/07-组件集成指南.md](docs/07-组件集成指南.md) 照做即可；前端侧另有一份 [前端集成 Skill](skills/resumable-upload-frontend/SKILL.md)（Vue3 直接复制面板组件，React/uniapp 用 headless 核心，含分框架工作量评估与手动验证清单）；想先看效果，`docker compose` 起 demo（[docs/02-快速启动.md](docs/02-快速启动.md)）。
+**给人**：同一份 [docs/07-组件集成指南.md](docs/07-组件集成指南.md) 照做即可——前端部分（Vue3 直接复制面板组件，React/uniapp 用 headless 核心，含分框架工作量评估与手动验证清单）已并入同一本手册与同一个 Skill；想先看效果，`docker compose` 起 demo（[docs/02-快速启动.md](docs/02-快速启动.md)）。
 
 **为什么适合 AI 集成**：组件源码小（后端核心约 2000 行、前端核心约 550 行）、依赖极轻、SPI 边界清晰（存储 / 元数据 / 合并锁 / 租户 / 事件五个扩展点全部"默认实现 + 宿主 Bean 覆盖"）、有锚定版本与回归测试——AI 最容易翻车的"改了没验证""漏装配注解""协议字段想当然"，手册里都有对应防线。
 
@@ -94,7 +94,7 @@ https://github.com/zhansan379/resumable-upload/blob/main/docs/07-组件集成指
 
 - [ ] **云上对象存储实测**：MinIO / RustFS 已有容器级集成测试（S3 后端 8 用例）；补充阿里云 OSS / 腾讯云 COS / 华为云 OBS / AWS S3 **真实账号**的端到端验证——重点覆盖直传、秒传、Range 下载与各家 multipart 配额差异，沉淀一份各厂商 S3 兼容性实测记录；
 - [x] **前端组件化**：headless 调度核心与 UI 解耦，Vue3 面板组件 `UploadPanel.vue` 零 UI 库依赖可直接复制（**按用户要求走复制模式，不发 npm 包**）；
-- [x] **前端集成 Skill 化**：[skills/resumable-upload-frontend](skills/resumable-upload-frontend/SKILL.md)——由用户指定框架（Vue3 / React / uniapp）、要不要 UI、上传模式（中转/直传），AI 按选择执行复制与改造并给出验证清单；
+- [x] **前端集成 Skill 化**：并入 [skills/resumable-upload-integration](skills/resumable-upload-integration/SKILL.md)（前后端一个 Skill）——由用户指定框架（Vue3 / React / uniapp）、要不要 UI、上传模式（中转/直传），AI 按选择执行复制与改造并给出验证清单；
 - [ ] **React 实现**：uploader 的 React 适配层（hooks + 组件封装，headless 核心已就绪，缺适配层与示例）；
 - [ ] **uniapp 实现**：适配 uniapp 的文件选择与上传 API（App / 小程序与浏览器的差异、小程序对请求并发与包体的限制）。
 

@@ -6,7 +6,7 @@ import org.springframework.core.type.AnnotatedTypeMetadata;
 
 /**
  * 合并锁选择：元数据走 MyBatis/MyBatis-Plus（多实例语义）时使用数据库租约锁；
- * 其余情况（json）由本地监视器锁兜底（MetadataStoreConfig 中 @ConditionalOnMissingBean 回落）。
+ * 其余情况（json，含 auto 回落）由本地监视器锁兜底（MetadataStoreConfig 中 @ConditionalOnMissingBean 回落）。
  */
 public class MybatisMergeLockCondition implements Condition {
 
@@ -17,6 +17,7 @@ public class MybatisMergeLockCondition implements Condition {
             return true;
         }
         return MybatisDetection.AUTO.equals(type)
-                && (MybatisDetection.mybatisPlusPresent(ctx) || MybatisDetection.mybatisSpringPresent(ctx));
+                && (MybatisDetection.mpRuntimeAvailable(ctx)
+                    || MybatisDetection.mybatisRuntimeAvailable(ctx));
     }
 }

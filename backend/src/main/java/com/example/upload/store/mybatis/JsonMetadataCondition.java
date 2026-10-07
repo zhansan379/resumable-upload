@@ -4,7 +4,7 @@ import org.springframework.context.annotation.Condition;
 import org.springframework.context.annotation.ConditionContext;
 import org.springframework.core.type.AnnotatedTypeMetadata;
 
-/** type=json，或 auto 且类路径无任何 MyBatis 运行时 → JSON 实现（零依赖回落） */
+/** type=json；或 auto 且"MyBatis 系类路径存在但数据源未配置"→ JSON 实现（零配置回落） */
 public class JsonMetadataCondition implements Condition {
 
     @Override
@@ -14,7 +14,12 @@ public class JsonMetadataCondition implements Condition {
             return true;
         }
         if (MybatisDetection.AUTO.equals(type)) {
-            return !MybatisDetection.mybatisPlusPresent(ctx) && !MybatisDetection.mybatisSpringPresent(ctx);
+            boolean usable = MybatisDetection.mpRuntimeAvailable(ctx)
+                    || MybatisDetection.mybatisRuntimeAvailable(ctx);
+            if (!usable) {
+                MybatisDetection.warnJsonFallback(ctx);
+                return true;
+            }
         }
         return false;
     }
